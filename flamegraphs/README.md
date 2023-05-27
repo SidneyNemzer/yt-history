@@ -1,6 +1,7 @@
 # Flamegraphs
 
 1. `01-7f3632.svg` -- Parsed in 6.10 seconds. Generated with `cargo flamegraph --root -F 10000`.
+2. `02-a7d968.svg` -- Parsed in 3.39 seconds. Generated with `cargo flamegraph -F 10000`.
 
 Files in this directory document performance changes over time. They're created with Flamegraph. See below for setup instructions.
 
