@@ -1,11 +1,27 @@
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::hash::Hash;
 use std::rc::Rc;
+
+trait Model {
+    type Id: Eq + Hash + Clone;
+
+    fn id(&self) -> &Self::Id;
+}
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Channel {
     pub url: String,
     pub name: String,
+}
+
+impl Model for Channel {
+    type Id = String;
+
+    fn id(&self) -> &String {
+        &self.url
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -19,6 +35,14 @@ pub struct Video {
     pub url: String,
     pub title: String,
     pub channel: Rc<Channel>,
+}
+
+impl Model for Video {
+    type Id = String;
+
+    fn id(&self) -> &String {
+        &self.url
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -36,7 +60,7 @@ pub struct Watched {
 
 #[derive(Serialize, Deserialize, Debug)]
 struct ScalarWatched {
-    video: u64,
+    video: <Video as Model>::Id,
     when: chrono::DateTime<Utc>,
 }
 
@@ -44,7 +68,7 @@ struct ScalarWatched {
 pub struct Models {
     watches: Vec<Watched>,
     channels: Vec<Rc<Channel>>,
-    videos: Vec<Rc<Video>>,
+    videos: HashMap<<Video as Model>::Id, Rc<Video>>,
 }
 
 impl Models {
@@ -52,18 +76,30 @@ impl Models {
         Models {
             watches: Vec::new(),
             channels: Vec::new(),
-            videos: Vec::new(),
+            videos: HashMap::new(),
         }
     }
 
     pub fn count_videos(&self, where_video: WhereVideo) -> u64 {
-        self.videos.iter().fold(0, |acc, video| {
-            if where_video.matches(video.clone()) {
-                return acc + 1;
-            } else {
-                return acc;
+        match where_video {
+            WhereVideo::Structure(matcher) => {
+                return self
+                    .videos
+                    .iter()
+                    .filter(|(_, video)| matcher.eq(*video))
+                    .count() as u64;
             }
-        })
+            WhereVideo::Reference(video) => {
+                if self.videos.contains_key(video.id()) {
+                    return 1;
+                } else {
+                    return 0;
+                }
+            }
+            WhereVideo::Any => {
+                return self.videos.len() as u64;
+            }
+        }
     }
 
     pub fn insert_watched(&mut self, when: chrono::DateTime<Utc>, video: WhereVideo) -> Watched {
@@ -88,7 +124,7 @@ impl Models {
             channel: self.find_channel(channel).unwrap().clone(),
         });
 
-        self.videos.push(video.clone());
+        self.videos.insert(video.id().clone(), video.clone());
 
         video
     }
@@ -109,10 +145,21 @@ impl Models {
     }
 
     pub fn find_video(&self, where_video: WhereVideo<'_>) -> Option<Rc<Video>> {
-        self.videos
-            .iter()
-            .find(|video| where_video.matches((*video).clone()))
-            .map(|video| video.clone())
+        match where_video {
+            WhereVideo::Structure(matcher) => {
+                if let Some(url) = matcher.url {
+                    return self.videos.get(url).map(|video| video.clone());
+                }
+
+                return self
+                    .videos
+                    .iter()
+                    .find(|(_, video)| matcher.eq(*video))
+                    .map(|(_, video)| video.clone());
+            }
+            WhereVideo::Reference(video) => Some(video),
+            WhereVideo::Any => self.videos.values().next().map(|video| video.clone()),
+        }
     }
 
     pub fn find_or_create_channel(&mut self, url: &String, name: &String) -> Rc<Channel> {
@@ -132,11 +179,7 @@ impl Models {
         title: String,
         channel: Rc<Channel>,
     ) -> Rc<Video> {
-        if let Some(video) = self.find_video(WhereVideo::Structure {
-            url: Some(url.clone()),
-            title: Some(title.clone()),
-            channel: Some(WhereChannel::Reference(channel.clone())),
-        }) {
+        if let Some(video) = self.videos.get(&url) {
             return video.clone();
         }
 
@@ -158,20 +201,13 @@ impl Models {
             .expect("channel not found") as u64
     }
 
-    pub fn index_of_video(&self, video: Rc<Video>) -> u64 {
-        self.videos
-            .iter()
-            .position(|v| v == &video)
-            .expect("video not found") as u64
-    }
-
     pub fn to_string(&self) -> String {
         let scalar_models = ScalarModels {
             watches: self
                 .watches
                 .iter()
                 .map(|watched| ScalarWatched {
-                    video: self.index_of_video(watched.video.clone()),
+                    video: watched.video.id().clone(),
                     when: watched.when,
                 })
                 .collect(),
@@ -186,7 +222,7 @@ impl Models {
             videos: self
                 .videos
                 .iter()
-                .map(|video| ScalarVideo {
+                .map(|(_, video)| ScalarVideo {
                     url: video.url.clone(),
                     title: video.title.clone(),
                     channel: self.index_of_channel(video.channel.clone()),
@@ -203,7 +239,7 @@ impl Models {
         let mut models = Models {
             watches: Vec::new(),
             channels: Vec::new(),
-            videos: Vec::new(),
+            videos: HashMap::new(),
         };
 
         for channel in scalar_models.channels {
@@ -221,13 +257,13 @@ impl Models {
                 title: video.title,
                 channel: channel.clone(),
             };
-            models.videos.push(Rc::new(video));
+            models.videos.insert(video.id().clone(), Rc::new(video));
         }
 
         for watched in scalar_models.watches {
-            let video = &models.videos[watched.video as usize];
+            let video = &models.videos.get(&watched.video).unwrap();
             let watched = Watched {
-                video: video.clone(),
+                video: (*video).clone(),
                 when: watched.when,
             };
             models.watches.push(watched);
@@ -275,12 +311,38 @@ impl WhereChannel<'_> {
     }
 }
 
+pub struct VideoMatcher<'a> {
+    url: Option<&'a String>,
+    title: Option<&'a String>,
+    channel: Option<WhereChannel<'a>>,
+}
+
+impl PartialEq<Rc<Video>> for VideoMatcher<'_> {
+    fn eq(&self, video: &Rc<Video>) -> bool {
+        if let Some(url) = self.url {
+            if &video.url != url {
+                return false;
+            }
+        }
+
+        if let Some(title) = self.title {
+            if &video.title != title {
+                return false;
+            }
+        }
+
+        if let Some(channel) = &self.channel {
+            if !channel.matches(video.channel.clone()) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+}
+
 pub enum WhereVideo<'a> {
-    Structure {
-        url: Option<String>,
-        title: Option<String>,
-        channel: Option<WhereChannel<'a>>,
-    },
+    Structure(VideoMatcher<'a>),
     Reference(Rc<Video>),
     Any,
 }
@@ -288,18 +350,20 @@ pub enum WhereVideo<'a> {
 impl WhereVideo<'_> {
     fn matches(&self, video: Rc<Video>) -> bool {
         match self {
-            WhereVideo::Structure {
+            WhereVideo::Structure(VideoMatcher {
                 url,
                 title,
                 channel,
-            } => {
+            }) => {
                 if let Some(url) = url {
-                    if video.url != *url {
+                    if &video.url != *url {
                         return false;
+                    } else {
+                        return true;
                     }
                 }
                 if let Some(title) = title {
-                    if video.title != *title {
+                    if &video.title != *title {
                         return false;
                     }
                 }
