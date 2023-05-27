@@ -42,7 +42,7 @@ struct ScalarWatched {
 
 #[derive(Debug)]
 pub struct Models {
-    watches: Vec<Rc<Watched>>,
+    watches: Vec<Watched>,
     channels: Vec<Rc<Channel>>,
     videos: Vec<Rc<Video>>,
 }
@@ -66,13 +66,9 @@ impl Models {
         })
     }
 
-    pub fn insert_watched(
-        &mut self,
-        when: chrono::DateTime<Utc>,
-        video: WhereVideo,
-    ) -> Rc<Watched> {
+    pub fn insert_watched(&mut self, when: chrono::DateTime<Utc>, video: WhereVideo) -> Watched {
         let video = self.find_video(video).unwrap().clone();
-        let watched = Rc::new(Watched { video, when });
+        let watched = Watched { video, when };
         self.watches.push(watched.clone());
 
         return watched;
@@ -97,13 +93,10 @@ impl Models {
         video
     }
 
-    pub fn find_watched(&self, where_watched: WhereWatched) -> Option<Rc<Watched>> {
-        self.watches
-            .iter()
-            .find(|watched| {
-                return where_watched.matches((*watched).clone());
-            })
-            .map(|watched| watched.clone())
+    pub fn find_watched(&self, where_watched: WhereWatched) -> Option<&Watched> {
+        self.watches.iter().find(|watched| {
+            return where_watched.matches((*watched).clone());
+        })
     }
 
     pub fn find_channel(&self, where_channel: WhereChannel) -> Option<Rc<Channel>> {
@@ -151,17 +144,17 @@ impl Models {
         self.insert_video(url, title, WhereChannel::Reference(channel))
     }
 
-    pub fn index_of_watched(&self, watched: Rc<Watched>) -> u64 {
+    pub fn index_of_watched(&self, watched: Watched) -> u64 {
         self.watches
             .iter()
-            .position(|w| w == &watched)
+            .position(|w| *w == watched)
             .expect("watched not found") as u64
     }
 
     pub fn index_of_channel(&self, channel: Rc<Channel>) -> u64 {
         self.channels
             .iter()
-            .position(|c| c == &channel)
+            .position(|c| *c == channel)
             .expect("channel not found") as u64
     }
 
@@ -237,7 +230,7 @@ impl Models {
                 video: video.clone(),
                 when: watched.when,
             };
-            models.watches.push(Rc::new(watched));
+            models.watches.push(watched);
         }
 
         models
@@ -333,15 +326,15 @@ enum WhereWatched<'a> {
         video: Option<WhereVideo<'a>>,
         when: Option<chrono::DateTime<Utc>>,
     },
-    Reference(Rc<Watched>),
+    Reference(&'a Watched),
 }
 
 impl WhereWatched<'_> {
-    fn matches(&self, watched: Rc<Watched>) -> bool {
+    fn matches(&self, watched: Watched) -> bool {
         match self {
             WhereWatched::Structure { video, when } => {
                 if let Some(video) = video {
-                    if !video.matches(watched.video.clone()) {
+                    if !video.matches(watched.video) {
                         return false;
                     }
                 }
@@ -354,7 +347,7 @@ impl WhereWatched<'_> {
                 return true;
             }
             WhereWatched::Reference(reference) => {
-                return reference == &watched;
+                return **reference == watched;
             }
         }
     }
