@@ -12,6 +12,7 @@ use std::iter::Enumerate;
 use std::iter::Peekable;
 use std::time::Instant;
 
+const USE_CACHE: bool = false;
 const DATA_PATH: &str = "data/watch-history.html";
 const CACHE_PATH: &str = "data/cache.json";
 
@@ -22,8 +23,21 @@ type Result<T> = std::result::Result<T, Box<dyn error::Error>>;
 type Iter = Peekable<Enumerate<Bytes<BufReader<File>>>>;
 
 fn main() -> Result<()> {
-    // Try loading cache first
-    let models = match File::open(CACHE_PATH) {
+    let models = load_models()?;
+
+    println!("Found {} videos", models.count_videos(WhereVideo::Any));
+
+    Ok(())
+}
+
+fn load_models() -> Result<Models> {
+    if !USE_CACHE {
+        println!("Not using cache because constant USE_CACHE is false");
+        return parse(DATA_PATH);
+    }
+
+    // Try loading cache
+    return match File::open(CACHE_PATH) {
         Ok(mut file) => {
             let start = Instant::now();
 
@@ -33,29 +47,26 @@ fn main() -> Result<()> {
 
             println!("Loaded cache data in {:?}", start.elapsed());
 
-            models
+            Ok(models)
         }
         Err(error) => {
+            // Fallback to parsing data from source file
             println!("Couldn't use cache data: {}", error);
 
-            let start = Instant::now();
             let models = parse(DATA_PATH)?;
-            println!("Parsed data in {:?}", start.elapsed());
 
             let mut file = File::create(CACHE_PATH)?;
             write!(file, "{}", models.to_string())?;
             println!("Wrote cache to {}", CACHE_PATH);
 
-            models
+            Ok(models)
         }
     };
-
-    println!("Found {} videos", models.count_videos(WhereVideo::Any));
-
-    Ok(())
 }
 
 fn parse(file_path: &str) -> Result<Models> {
+    let start = Instant::now();
+
     let f = File::open(file_path)?;
     let reader = BufReader::new(f);
     let mut bytes = reader.bytes().enumerate().peekable();
@@ -67,7 +78,7 @@ fn parse(file_path: &str) -> Result<Models> {
             Ok(data_row) => {
                 let data_row_copy = data_row.clone();
                 let channel =
-                    models.find_or_create_channel(data_row.channel_url, data_row.channel_name);
+                    models.find_or_create_channel(&data_row.channel_url, &data_row.channel_name);
                 let video = models.find_or_create_video(data_row.url, data_row.title, channel);
 
                 // Jun 29, 2021, 4:49:36 PM EDT
@@ -101,6 +112,7 @@ fn parse(file_path: &str) -> Result<Models> {
         }
     }
 
+    println!("Parsed data in {:?}", start.elapsed());
     Ok(models)
 }
 

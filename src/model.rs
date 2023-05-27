@@ -1,5 +1,6 @@
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use std::rc::Rc;
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Channel {
@@ -17,7 +18,7 @@ struct ScalarChannel {
 pub struct Video {
     pub url: String,
     pub title: String,
-    pub channel: Channel,
+    pub channel: Rc<Channel>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -42,7 +43,7 @@ struct ScalarWatched {
 #[derive(Debug)]
 pub struct Models {
     watches: Vec<Watched>,
-    channels: Vec<Channel>,
+    channels: Vec<Rc<Channel>>,
     videos: Vec<Video>,
 }
 
@@ -73,11 +74,8 @@ impl Models {
         return watched;
     }
 
-    pub fn insert_channel(&mut self, url: String, name: String) -> Channel {
-        let channel = Channel {
-            url: url,
-            name: name,
-        };
+    pub fn insert_channel(&mut self, url: String, name: String) -> Rc<Channel> {
+        let channel = Rc::new(Channel { url, name });
         self.channels.push(channel.clone());
 
         channel
@@ -101,10 +99,13 @@ impl Models {
         })
     }
 
-    pub fn find_channel(&self, where_channel: WhereChannel) -> Option<&Channel> {
-        self.channels.iter().find(|channel| {
-            return where_channel.matches((*channel).clone());
-        })
+    pub fn find_channel(&self, where_channel: WhereChannel) -> Option<Rc<Channel>> {
+        self.channels
+            .iter()
+            .find(|channel| {
+                return where_channel.matches((*channel).clone());
+            })
+            .map(|channel| channel.clone())
     }
 
     pub fn find_video(&self, where_video: WhereVideo<'_>) -> Option<&Video> {
@@ -113,28 +114,33 @@ impl Models {
             .find(|video| where_video.matches((*video).clone()))
     }
 
-    pub fn find_or_create_channel(&mut self, url: String, name: String) -> Channel {
+    pub fn find_or_create_channel(&mut self, url: &String, name: &String) -> Rc<Channel> {
         if let Some(channel) = self.find_channel(WhereChannel::Structure {
             url: Some(&url),
             name: Some(&name),
         }) {
-            return channel.clone();
+            return channel;
         }
 
-        self.insert_channel(url, name)
+        self.insert_channel(url.clone(), name.clone())
     }
 
-    pub fn find_or_create_video(&mut self, url: String, title: String, channel: Channel) -> Video {
+    pub fn find_or_create_video(
+        &mut self,
+        url: String,
+        title: String,
+        channel: Rc<Channel>,
+    ) -> Video {
         if let Some(video) = self.find_video(WhereVideo::Structure {
             url: Some(url.clone()),
             title: Some(title.clone()),
-            channel: Some(WhereChannel::Reference(&channel)),
+            channel: Some(WhereChannel::Reference(channel.clone())),
         }) {
             return video.clone();
         }
 
-        let channel = self.find_or_create_channel(channel.url, channel.name);
-        self.insert_video(url, title, WhereChannel::Reference(&channel))
+        let channel = self.find_or_create_channel(&channel.url, &channel.name);
+        self.insert_video(url, title, WhereChannel::Reference(channel))
     }
 
     pub fn index_of_watched(&self, watched: Watched) -> u64 {
@@ -144,7 +150,7 @@ impl Models {
             .expect("watched not found") as u64
     }
 
-    pub fn index_of_channel(&self, channel: Channel) -> u64 {
+    pub fn index_of_channel(&self, channel: Rc<Channel>) -> u64 {
         self.channels
             .iter()
             .position(|c| *c == channel)
@@ -204,7 +210,7 @@ impl Models {
                 url: channel.url,
                 name: channel.name,
             };
-            models.channels.push(channel);
+            models.channels.push(Rc::new(channel));
         }
 
         for video in scalar_models.videos {
@@ -242,28 +248,28 @@ pub enum WhereChannel<'a> {
         url: Option<&'a String>,
         name: Option<&'a String>,
     },
-    Reference(&'a Channel),
+    Reference(Rc<Channel>),
 }
 
 impl WhereChannel<'_> {
-    fn matches(&self, channel: Channel) -> bool {
-        match *self {
+    fn matches(&self, channel: Rc<Channel>) -> bool {
+        match self {
             WhereChannel::Structure { url, name } => {
                 if let Some(url) = url {
-                    if channel.url != *url {
+                    if &channel.url != *url {
                         return false;
                     }
                 }
 
                 if let Some(name) = name {
-                    if channel.name != *name {
+                    if &channel.name != *name {
                         return false;
                     }
                 }
 
                 return true;
             }
-            WhereChannel::Reference(reference) => *reference == channel,
+            WhereChannel::Reference(reference) => reference == &channel,
         }
     }
 }
