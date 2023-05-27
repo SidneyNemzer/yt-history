@@ -7,6 +7,8 @@
 
 Files in this directory document performance changes over time. They're created with Flamegraph. See below for setup instructions.
 
+The files are best viewed locally (in a browser). You can view the SVG on GitHub by opening the file and clicking "Raw" in the top right. However the embedded JS for navigation won't run.
+
 Flamegraph files are named in the format:
 
 ```
