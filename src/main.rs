@@ -90,7 +90,7 @@ fn parse(file_path: &str) -> Result<Models> {
                     )
                     .expect(format!("Couldn't parse date from {:#?}", data_row_copy).as_str());
 
-                models.insert_watched(date, WhereVideo::Reference(&video));
+                models.insert_watched(date, WhereVideo::Reference(video));
             }
             Err(e) => {
                 if let Some(ParseError::UnterminatedInput {
