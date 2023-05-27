@@ -1,7 +1,7 @@
 mod model;
 
 use chrono::TimeZone;
-use model::{Models, WhereVideo};
+use colored::Colorize;
 use std::error;
 use std::fmt;
 use std::fs::File;
@@ -11,6 +11,8 @@ use std::io::Bytes;
 use std::iter::Enumerate;
 use std::iter::Peekable;
 use std::time::Instant;
+
+use crate::model::{Models, WhereVideo, WhereWatched};
 
 const USE_CACHE: bool = true;
 const DATA_PATH: &str = "data/watch-history.html";
@@ -26,17 +28,33 @@ fn main() -> Result<()> {
     let models = load_models()?;
 
     println!(
-        "History contains {} unique videos",
-        models.count_videos(WhereVideo::Any)
+        "{} {} {} {} {} {}",
+        "History contains".dimmed(),
+        models.count_videos(WhereVideo::Any),
+        "unique videos".dimmed(),
+        "and".dimmed(),
+        models.count_watches(WhereWatched::Any),
+        "watches".dimmed(),
     );
 
     let video_watches = models.count_watched_by_video();
     let mut counts = video_watches.iter().collect::<Vec<_>>();
     counts.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
 
-    println!("Top 10 most watched videos:");
+    println!();
+    println!("{}", "Top 10 most watched videos".bold());
     for (i, (_, (count, video))) in counts.iter().enumerate().take(10) {
-        println!("{}. {} viewed {} times", i + 1, video.title, count);
+        let s = if *count != 1 { "s" } else { "" };
+
+        println!(
+            "  {index}. {title} {viewed} {count} {time}{s}",
+            index = i + 1,
+            title = video.title,
+            viewed = "viewed".dimmed(),
+            count = count,
+            time = "time".dimmed(),
+            s = s.dimmed(),
+        );
     }
 
     Ok(())
@@ -51,13 +69,17 @@ fn load_models() -> Result<Models> {
     // Try loading cache
     return load_cache().or_else(|e| {
         // Fallback to parsing data from source file
-        println!("Couldn't use cache data: {}", e);
+        println!(
+            "{} {}",
+            "Couldn't use cache data:".dimmed(),
+            e.to_string().dimmed()
+        );
 
         let models = parse(DATA_PATH)?;
 
         let mut file = File::create(CACHE_PATH)?;
         write!(file, "{}", models.to_string())?;
-        println!("Wrote cache to {}", CACHE_PATH);
+        println!("{} {}", "Wrote cache to".dimmed(), CACHE_PATH.white());
 
         Ok(models)
     });
@@ -69,7 +91,11 @@ fn load_cache() -> Result<Models> {
     let mut contents = String::new();
     file.read_to_string(&mut contents)?;
     let models = Models::from_str(contents)?;
-    println!("Loaded cache data in {:?}", start.elapsed());
+    println!(
+        "{} {:.2?}",
+        "Loaded cache data in".dimmed(),
+        start.elapsed()
+    );
 
     Ok(models)
 }
@@ -119,7 +145,7 @@ fn parse(file_path: &str) -> Result<Models> {
         }
     }
 
-    println!("Parsed data in {:?}", start.elapsed());
+    println!("{} {:.2?}", "Parsed data in".dimmed(), start.elapsed());
     Ok(models)
 }
 

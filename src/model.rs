@@ -102,6 +102,24 @@ impl Models {
         }
     }
 
+    pub fn count_watches(&self, where_watch: WhereWatched) -> u64 {
+        match where_watch {
+            WhereWatched::Structure(matcher) => {
+                return self
+                    .watches
+                    .iter()
+                    .filter(|watched| matcher.eq(watched))
+                    .count() as u64;
+            }
+            WhereWatched::Reference(_) => {
+                todo!();
+            }
+            WhereWatched::Any => {
+                return self.watches.len() as u64;
+            }
+        }
+    }
+
     pub fn count_watched_by_video(&self) -> HashMap<String, (usize, Rc<Video>)> {
         let mut counts = HashMap::new();
 
@@ -343,6 +361,7 @@ impl PartialEq<Rc<Video>> for VideoMatcher<'_> {
 }
 
 pub enum WhereVideo<'a> {
+    #[allow(dead_code)]
     Structure(VideoMatcher<'a>),
     Reference(Rc<Video>),
     Any,
@@ -386,18 +405,41 @@ impl WhereVideo<'_> {
     }
 }
 
-enum WhereWatched<'a> {
-    Structure {
-        video: Option<WhereVideo<'a>>,
-        when: Option<chrono::DateTime<Utc>>,
-    },
-    Reference(&'a Watched),
+pub struct WatchedMatcher<'a> {
+    video: Option<WhereVideo<'a>>,
+    when: Option<chrono::DateTime<Utc>>,
+}
+
+impl PartialEq<Watched> for WatchedMatcher<'_> {
+    fn eq(&self, watched: &Watched) -> bool {
+        if let Some(video) = &self.video {
+            if !video.matches(watched.video.clone()) {
+                return false;
+            }
+        }
+
+        if let Some(when) = &self.when {
+            if watched.when != *when {
+                return false;
+            }
+        }
+
+        return true;
+    }
+}
+
+#[allow(dead_code)]
+pub enum WhereWatched<'a> {
+    Structure(WatchedMatcher<'a>),
+    Reference(Rc<Watched>),
+    Any,
 }
 
 impl WhereWatched<'_> {
+    #[allow(dead_code)]
     fn matches(&self, watched: Watched) -> bool {
         match self {
-            WhereWatched::Structure { video, when } => {
+            WhereWatched::Structure(WatchedMatcher { video, when }) => {
                 if let Some(video) = video {
                     if !video.matches(watched.video) {
                         return false;
@@ -413,6 +455,9 @@ impl WhereWatched<'_> {
             }
             WhereWatched::Reference(reference) => {
                 return **reference == watched;
+            }
+            WhereWatched::Any => {
+                return true;
             }
         }
     }
