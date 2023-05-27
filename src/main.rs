@@ -12,7 +12,7 @@ use std::iter::Enumerate;
 use std::iter::Peekable;
 use std::time::Instant;
 
-const USE_CACHE: bool = false;
+const USE_CACHE: bool = true;
 const DATA_PATH: &str = "data/watch-history.html";
 const CACHE_PATH: &str = "data/cache.json";
 
@@ -25,7 +25,19 @@ type Iter = Peekable<Enumerate<Bytes<BufReader<File>>>>;
 fn main() -> Result<()> {
     let models = load_models()?;
 
-    println!("Found {} videos", models.count_videos(WhereVideo::Any));
+    println!(
+        "History contains {} unique videos",
+        models.count_videos(WhereVideo::Any)
+    );
+
+    let video_watches = models.count_watched_by_video();
+    let mut counts = video_watches.iter().collect::<Vec<_>>();
+    counts.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+
+    println!("Top 10 most watched videos:");
+    for (i, (_, (count, video))) in counts.iter().enumerate().take(10) {
+        println!("{}. {} viewed {} times", i + 1, video.title, count);
+    }
 
     Ok(())
 }
@@ -37,31 +49,29 @@ fn load_models() -> Result<Models> {
     }
 
     // Try loading cache
-    return match File::open(CACHE_PATH) {
-        Ok(mut file) => {
-            let start = Instant::now();
+    return load_cache().or_else(|e| {
+        // Fallback to parsing data from source file
+        println!("Couldn't use cache data: {}", e);
 
-            let mut contents = String::new();
-            file.read_to_string(&mut contents)?;
-            let models = Models::from_str(contents);
+        let models = parse(DATA_PATH)?;
 
-            println!("Loaded cache data in {:?}", start.elapsed());
+        let mut file = File::create(CACHE_PATH)?;
+        write!(file, "{}", models.to_string())?;
+        println!("Wrote cache to {}", CACHE_PATH);
 
-            Ok(models)
-        }
-        Err(error) => {
-            // Fallback to parsing data from source file
-            println!("Couldn't use cache data: {}", error);
+        Ok(models)
+    });
+}
 
-            let models = parse(DATA_PATH)?;
+fn load_cache() -> Result<Models> {
+    let start = Instant::now();
+    let mut file = File::open(CACHE_PATH)?;
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)?;
+    let models = Models::from_str(contents)?;
+    println!("Loaded cache data in {:?}", start.elapsed());
 
-            let mut file = File::create(CACHE_PATH)?;
-            write!(file, "{}", models.to_string())?;
-            println!("Wrote cache to {}", CACHE_PATH);
-
-            Ok(models)
-        }
-    };
+    Ok(models)
 }
 
 fn parse(file_path: &str) -> Result<Models> {
@@ -84,10 +94,7 @@ fn parse(file_path: &str) -> Result<Models> {
                 // Jun 29, 2021, 4:49:36 PM EDT
                 // Aug 9, 2019, 4:26:40 PM EDT
                 let date = chrono::Utc
-                    .datetime_from_str(
-                        filter_ascii(&data_row.date).as_str(),
-                        "%h %e, %Y, %I:%M:%S%p %Z",
-                    )
+                    .datetime_from_str(data_row.date.as_str(), "%h %e, %Y, %I:%M:%S%p %Z")
                     .expect(format!("Couldn't parse date from {:#?}", data_row_copy).as_str());
 
                 models.insert_watched(date, WhereVideo::Reference(video));
@@ -134,43 +141,45 @@ fn read_data_row(bytes: &mut Iter) -> Result<DataRow> {
 
     skip_to(bytes, ANCHOR_OPENING_TO_HREF.into())?;
 
-    result.url = read_until(bytes, '"'.into())?;
+    result.url = filter_ascii(&read_until(bytes, '"'.into())?);
 
     skip_to(bytes, ">".into())?;
 
-    result.title = read_until(bytes, "<".into())?.replace("\n", " ");
+    result.title = filter_ascii(&read_until(bytes, "<".into())?.replace("\n", " "));
 
-    // Skip to just before the channel link; it may be missing if the video is
-    // no longer available.
+    // Skip to just before the channel link
     skip_to(bytes, "<br />".into())?;
 
+    // Check if the channel is present
     match peek(bytes)? {
         '<' => {
             // Parse channel
 
             skip_to(bytes, '"'.into())?;
 
-            result.channel_url = read_until(bytes, '"'.into())?;
+            result.channel_url = filter_ascii(&read_until(bytes, '"'.into())?);
 
             skip_to(bytes, ">".into())?;
 
-            result.channel_name = read_until(bytes, "<".into())?.replace("\n", " ");
+            result.channel_name = filter_ascii(&read_until(bytes, "<".into())?.replace("\n", " "));
 
             skip_to(bytes, "<br />".into())?;
         }
         'W' => {
             // Sometimes, the channel is missing and instead it has the text
-            // "Watched at <time>". We skip this to the timestamp.
+            // "Watched at <time>". We skip this text to the start of the timestamp.
             skip_to(bytes, "<br />".into())?;
         }
         _ => {
-            // No channel, just parse the date next.
+            // No channel, we're at the timestamp.
         }
     }
 
-    result.date = read_until(bytes, "\n".into())?
-        .replace("\u{a0}", " ")
-        .replace("\n", " ");
+    result.date = filter_ascii(
+        &read_until(bytes, "\n".into())?
+            .replace("\u{a0}", " ")
+            .replace("\n", " "),
+    );
 
     Ok(result)
 }

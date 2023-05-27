@@ -102,6 +102,20 @@ impl Models {
         }
     }
 
+    pub fn count_watched_by_video(&self) -> HashMap<String, (usize, Rc<Video>)> {
+        let mut counts = HashMap::new();
+
+        for watched in self.watches.iter() {
+            let count = counts
+                .entry(watched.video.id().clone())
+                .or_insert((0, watched.video.clone()));
+
+            (*count).0 += 1;
+        }
+
+        counts
+    }
+
     pub fn insert_watched(&mut self, when: chrono::DateTime<Utc>, video: WhereVideo) -> Watched {
         let video = self.find_video(video).unwrap().clone();
         let watched = Watched { video, when };
@@ -233,8 +247,8 @@ impl Models {
         serde_json::to_string(&scalar_models).unwrap()
     }
 
-    pub fn from_str(s: String) -> Self {
-        let scalar_models: ScalarModels = serde_json::from_str(&s).unwrap();
+    pub fn from_str(s: String) -> serde_json::Result<Models> {
+        let scalar_models: ScalarModels = serde_json::from_str(&s)?;
 
         let mut models = Models {
             watches: Vec::new(),
@@ -269,7 +283,7 @@ impl Models {
             models.watches.push(watched);
         }
 
-        models
+        Ok(models)
     }
 }
 
