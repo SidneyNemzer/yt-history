@@ -143,12 +143,6 @@ impl Models {
         video
     }
 
-    pub fn find_watched(&self, where_watched: WhereWatched) -> Option<&Watched> {
-        self.watches.iter().find(|watched| {
-            return where_watched.matches((*watched).clone());
-        })
-    }
-
     pub fn find_channel(&self, where_channel: WhereChannel) -> Option<Rc<Channel>> {
         self.channels
             .iter()
@@ -199,13 +193,6 @@ impl Models {
 
         let channel = self.find_or_create_channel(&channel.url, &channel.name);
         self.insert_video(url, title, WhereChannel::Reference(channel))
-    }
-
-    pub fn index_of_watched(&self, watched: Watched) -> u64 {
-        self.watches
-            .iter()
-            .position(|w| *w == watched)
-            .expect("watched not found") as u64
     }
 
     pub fn index_of_channel(&self, channel: Rc<Channel>) -> u64 {
