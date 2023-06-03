@@ -235,7 +235,7 @@ impl ModelsParser {
         let mut read = String::new();
 
         for (_, maybe_char) in chars {
-            let char = std::result::Result::<char, ParseError>::from(maybe_char)?;
+            let char = Result::<char, ParseError>::from(maybe_char)?;
             self.chars_read += 1;
 
             if char == '\n' {
@@ -275,13 +275,14 @@ impl ModelsParser {
                         closest_location = found_location.clone();
                     }
 
-                    // We found part of the string, but then it didn't match. Append what we saw to read.
-                    read.push_str(&found);
+                    // We found part of the string, but then it didn't match.
+                    // Append what we saw to read.
+                    push_collapse_whitespace(&mut read, &found);
 
                     found = String::new();
                     found_location = Location::default();
                 } else {
-                    read.push(char);
+                    push_collapse_whitespace(&mut read, &String::from(char));
                 }
             }
         }
@@ -307,6 +308,28 @@ impl ModelsParser {
                 expected: "any character".into(),
                 closest: None,
             }),
+        }
+    }
+}
+
+/// Appends s to target, converting whitespace characters to U+0020 SPACE.
+/// Consecutive whitespace is collapsed.
+fn push_collapse_whitespace(target: &mut String, s: &str) {
+    let mut last_whitespace = target
+        .chars()
+        .last()
+        .map(|c| c.is_whitespace())
+        .unwrap_or(false);
+
+    for c in s.chars() {
+        if c.is_whitespace() {
+            if !last_whitespace {
+                target.push(' ');
+            }
+            last_whitespace = true;
+        } else {
+            target.push(c);
+            last_whitespace = false;
         }
     }
 }
