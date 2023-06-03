@@ -166,18 +166,13 @@ impl ModelsParser {
     fn skip_to(&mut self, chars: &mut Iter, s: &str) -> Result<(), ParseError> {
         let mut closest = String::new();
         let mut closest_location = Location::default();
-        let mut s_index = 0;
 
-        let mut longest_closest = String::new();
-        let mut longest_closest_location = Location::default();
+        let mut found = String::new();
+        let mut found_location = Location::default();
 
         for (_, maybe_char) in chars {
-            let char = std::result::Result::<char, ParseError>::from(maybe_char)?;
+            let char = Result::<char, ParseError>::from(maybe_char)?;
             self.chars_read += 1;
-
-            if char == 'W' {
-                // println!("{}:{} {}", self.line + 1, self.column + 1, char);
-            }
 
             if char == '\n' {
                 self.line += 1;
@@ -186,37 +181,36 @@ impl ModelsParser {
                 self.column += 1;
             }
 
-            let want = s.chars().nth(s_index).expect(&format!(
-                "skip_to: s_index out of sync with s (s: {:?}, s_index: {})",
-                s, s_index
+            let want = s.chars().nth(found.chars().count()).expect(&format!(
+                "skip_to: found out of sync with s (s: {}, found: {})",
+                s, found
             ));
 
             if want == char {
-                if s_index == 0 {
-                    closest = String::new();
-                    closest_location = Location {
-                        chars: self.chars_read,
-                        columns: self.column,
+                if found.len() == 0 {
+                    found_location = Location {
                         lines: self.line,
+                        columns: self.column,
+                        chars: self.chars_read,
                     };
                 }
 
-                s_index += 1;
-                closest.push(char);
+                found.push(char);
 
-                if s_index == s.chars().count() {
+                if &found == s {
                     return Ok(());
                 }
             } else {
-                if s_index > 0 {
-                    closest.push(char);
-                    if closest.len() > longest_closest.len() {
-                        longest_closest = closest.clone();
-                        longest_closest_location = closest_location.clone();
+                if found.len() > 0 {
+                    found.push(char);
+                    if found.chars().count() > closest.chars().count() {
+                        closest = found.clone();
+                        closest_location = found_location.clone();
                     }
                 }
 
-                s_index = 0;
+                found = String::new();
+                found_location = Location::default()
             }
         }
 
@@ -232,9 +226,13 @@ impl ModelsParser {
     }
 
     fn read_until(&mut self, chars: &mut Iter, s: &str) -> Result<String, ParseError> {
-        let mut read = String::new();
         let mut closest = String::new();
-        let mut s_index = 0;
+        let mut closest_location = Location::default();
+
+        let mut found = String::new();
+        let mut found_location = Location::default();
+
+        let mut read = String::new();
 
         for (_, maybe_char) in chars {
             let char = std::result::Result::<char, ParseError>::from(maybe_char)?;
@@ -249,31 +247,42 @@ impl ModelsParser {
 
             let want = s
                 .chars()
-                .nth(s_index)
+                .nth(found.chars().count())
                 .expect("read_until: s_index out of sync with s");
 
             if want == char {
                 // Found part of string, don't add this to read
 
-                if s_index == 0 {
-                    closest = String::new();
+                if found.len() == 0 {
+                    found_location = Location {
+                        lines: self.line,
+                        columns: self.column,
+                        chars: self.chars_read,
+                    };
                 }
 
-                s_index += 1;
+                found.push(char);
 
-                if s_index == s.chars().count() {
+                if &found == s {
                     return Ok(read);
                 }
             } else {
-                if s_index > 0 {
-                    closest.push(char);
+                if found.len() > 0 {
+                    found.push(char);
+
+                    if found.chars().count() > closest.chars().count() {
+                        closest = found.clone();
+                        closest_location = found_location.clone();
+                    }
 
                     // We found part of the string, but then it didn't match. Append what we saw to read.
-                    read.push_str(&closest);
-                }
+                    read.push_str(&found);
 
-                s_index = 0;
-                read.push(char);
+                    found = String::new();
+                    found_location = Location::default();
+                } else {
+                    read.push(char);
+                }
             }
         }
 
@@ -282,7 +291,7 @@ impl ModelsParser {
             closest: if closest.is_empty() {
                 None
             } else {
-                Some((closest, todo!("track and return location of closest")))
+                Some((closest, closest_location))
             },
         })
         .into()
@@ -325,7 +334,7 @@ pub enum ParseError {
     NoRows,
 }
 
-impl From<NextUtf8> for std::result::Result<char, ParseError> {
+impl From<NextUtf8> for Result<char, ParseError> {
     fn from(next: NextUtf8) -> Self {
         match next {
             NextUtf8::Valid(char) => Ok(char),
