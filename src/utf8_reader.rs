@@ -12,10 +12,11 @@ use std::str;
 /// Section 3.9, Definition D92
 const MAX_BYTES_UTF8_CODE_POINT: usize = 4;
 
-struct Utf8Iter<R>
+pub struct Utf8Iter<R>
 where
     R: Read,
 {
+    bytes_read: usize,
     reader: R,
     buf: [u8; MAX_BYTES_UTF8_CODE_POINT],
     buf_len: usize,
@@ -37,6 +38,17 @@ pub enum NextUtf8 {
     End,
 }
 
+impl Clone for NextUtf8 {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Valid(c) => Self::Valid(c.clone()),
+            Self::InvalidBytes(b) => Self::InvalidBytes(b.clone()),
+            Self::IoError(e) => Self::IoError(std::io::Error::new(e.kind(), e.to_string())),
+            Self::End => Self::End,
+        }
+    }
+}
+
 impl PartialEq<NextUtf8> for NextUtf8 {
     fn eq(&self, other: &NextUtf8) -> bool {
         match (self, other) {
@@ -50,8 +62,9 @@ impl PartialEq<NextUtf8> for NextUtf8 {
 }
 
 impl<R: Read> Utf8Iter<R> {
-    fn new(reader: R) -> Utf8Iter<R> {
+    pub fn new(reader: R) -> Utf8Iter<R> {
         Utf8Iter {
+            bytes_read: 0,
             reader,
             buf: [0; MAX_BYTES_UTF8_CODE_POINT],
             buf_len: 0,
@@ -61,69 +74,86 @@ impl<R: Read> Utf8Iter<R> {
     /// Returns the next character in the stream, possibly made of several bytes
     /// from the underlying reader.
     ///
-    /// None indicates the underlying reader returned Ok(0), which manes the end
-    /// of the file descriptor was found -- for files, this means the end of the
-    /// file. For sockets or pipes, the socket/pipe is empty. However this could
-    /// return data again in the future. Files can have data appended and
-    /// sockets/pipes.
-    fn next(&mut self) -> NextUtf8 {
+    /// NextUtf8::End indicates the underlying reader returned Ok(0), which
+    /// means the end of the file descriptor was found -- for files, the end of
+    /// the file. For sockets or pipes, the socket/pipe is empty. However next()
+    /// could return data again in the future. Files can have data appended and
+    /// sockets/pipes can receive data.
+    pub fn next(&mut self) -> NextUtf8 {
         loop {
-            match self.reader.read(self.buf.as_mut()) {
+            match self.reader.read(self.buf[self.buf_len..].as_mut()) {
                 Ok(0) => {
                     if self.buf_len == 0 {
-                    return NextUtf8::End;
-                }
+                        return NextUtf8::End;
+                    }
                 }
                 Ok(n) => {
                     self.buf_len += n;
+                    self.bytes_read += n;
                 }
                 Err(e) => {
                     return NextUtf8::IoError(e);
                 }
             }
 
-                    match str::from_utf8(&self.buf[..self.buf_len]) {
-                        Ok(s) => {
-                            self.buf_len = 0;
-                            return NextUtf8::Valid(s.chars().next().unwrap());
-                        }
-                        Err(e) => {
-                            if e.valid_up_to() > 0 {
-                                // The beginning of the buffer is a valid code point, copy it out.
-                                let code_points = &self.buf[..e.valid_up_to()];
+            match str::from_utf8(&self.buf[..self.buf_len]) {
+                Ok(s) => {
+                    let c = s.chars().next().unwrap();
+                    self.buf.copy_within(c.len_utf8().., 0);
+                    self.buf_len -= c.len_utf8();
+                    return NextUtf8::Valid(c);
+                }
+                Err(e) => {
+                    if e.valid_up_to() > 0 {
+                        // The beginning of the buffer is a valid code point, copy it out.
+                        let code_points = &self.buf[..e.valid_up_to()];
                         let char = str::from_utf8(code_points).unwrap().chars().next().unwrap();
 
-                                // Shift the buffer left by the number of valid bytes.
-                        let remaining_buffer_range = e.valid_up_to()..MAX_BYTES_UTF8_CODE_POINT;
-                                self.buf.copy_within(remaining_buffer_range, 0);
-                                self.buf_len = self.buf_len - e.valid_up_to();
+                        // Shift the buffer left by the number of bytes in the first char.
+                        let removed_bytes = char.len_utf8();
+                        let remaining_buffer_range = removed_bytes..MAX_BYTES_UTF8_CODE_POINT;
+                        self.buf.copy_within(remaining_buffer_range, 0);
+                        self.buf_len = self.buf_len - removed_bytes;
 
-                                return NextUtf8::Valid(char);
-                            }
+                        return NextUtf8::Valid(char);
+                    }
 
-                            match e.error_len() {
-                                Some(n) => {
-                                    // The beginning of the buffer is invalid, remove it.
-                                    let invalid_bytes = Vec::from(&self.buf[..n]);
+                    match e.error_len() {
+                        Some(n) => {
+                            // The beginning of the buffer is invalid, remove it.
+                            let invalid_bytes = Vec::from(&self.buf[..n]);
 
-                                    self.buf.copy_within(n..MAX_BYTES_UTF8_CODE_POINT, 0);
-                                    self.buf_len = self.buf_len - n;
+                            self.buf.copy_within(n..MAX_BYTES_UTF8_CODE_POINT, 0);
+                            self.buf_len = self.buf_len - n;
 
-                                    return NextUtf8::InvalidBytes(invalid_bytes);
-                                }
-                                None => {
-                                    continue;
-                                }
-                            }
+                            return NextUtf8::InvalidBytes(invalid_bytes);
                         }
-                    };
+                        None => {
+                            continue;
+                        }
+                    }
                 }
+            };
+        }
+    }
+}
+
+impl<R: Read> Iterator for Utf8Iter<R> {
+    type Item = NextUtf8;
+
+    fn next(&mut self) -> Option<NextUtf8> {
+        match self.next() {
+            NextUtf8::End => None,
+            next => Some(next),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pipe;
+    use std::io::Write;
 
     #[test]
     fn test_empty_reader() {
@@ -142,6 +172,18 @@ mod tests {
         let mut reader = std::io::Cursor::new(vec![0x61]);
         let mut iter = Utf8Iter::new(&mut reader);
 
+        assert_eq!(iter.next(), NextUtf8::Valid('a'));
+        assert_eq!(iter.next(), NextUtf8::End);
+    }
+
+    #[test]
+    fn test_len_4_reader() {
+        let mut reader = std::io::Cursor::new(vec![0x61, 0x61, 0x61, 0x61]);
+        let mut iter = Utf8Iter::new(&mut reader);
+
+        assert_eq!(iter.next(), NextUtf8::Valid('a'));
+        assert_eq!(iter.next(), NextUtf8::Valid('a'));
+        assert_eq!(iter.next(), NextUtf8::Valid('a'));
         assert_eq!(iter.next(), NextUtf8::Valid('a'));
         assert_eq!(iter.next(), NextUtf8::End);
     }
@@ -167,9 +209,11 @@ mod tests {
 
     #[test]
     fn test_valid_and_invalid_reader() {
-        let mut reader = std::io::Cursor::new(vec![0x61, 0xC0]);
+        let mut reader = std::io::Cursor::new(vec![0x61, 0x61, 0x61, 0xC0]);
         let mut iter = Utf8Iter::new(&mut reader);
 
+        assert_eq!(iter.next(), NextUtf8::Valid('a'));
+        assert_eq!(iter.next(), NextUtf8::Valid('a'));
         assert_eq!(iter.next(), NextUtf8::Valid('a'));
         assert_eq!(iter.next(), NextUtf8::InvalidBytes(vec![0xC0]));
         assert_eq!(iter.next(), NextUtf8::End);

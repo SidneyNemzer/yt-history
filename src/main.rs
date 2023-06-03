@@ -1,31 +1,37 @@
 mod model;
+mod models_parser;
+mod pipe;
+mod utf8_reader;
 
-use chrono::TimeZone;
 use colored::Colorize;
-use std::error;
-use std::fmt;
+use models_parser::ParseError;
 use std::fs::File;
 use std::io::prelude::*;
 use std::io::BufReader;
-use std::io::Bytes;
-use std::iter::Enumerate;
-use std::iter::Peekable;
 use std::time::Instant;
 
 use crate::model::{Models, WhereVideo, WhereWatched};
+use crate::models_parser::ModelsParser;
 
-const USE_CACHE: bool = true;
+const USE_CACHE: bool = false;
 const DATA_PATH: &str = "data/watch-history.html";
 const CACHE_PATH: &str = "data/cache.json";
 
-const ANCHOR_OPENING_TO_HREF: &str = "Watched\u{a0}<a href=\"";
-
-type Result<T> = std::result::Result<T, Box<dyn error::Error>>;
-
-type Iter = Peekable<Enumerate<Bytes<BufReader<File>>>>;
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 fn main() -> Result<()> {
-    let models = load_models()?;
+    let models = match load_models() {
+        Ok(models) => models,
+        Err(error) => {
+            if error.downcast_ref::<ParseError>().is_some() {
+                return Ok(());
+            }
+
+            println!("{} {}", "Error:".red(), error);
+
+            return Ok(());
+        }
+    };
 
     println!(
         "{} {} {} {} {} {}",
@@ -62,7 +68,10 @@ fn main() -> Result<()> {
 
 fn load_models() -> Result<Models> {
     if !USE_CACHE {
-        println!("Not using cache because constant USE_CACHE is false");
+        println!(
+            "{}",
+            "Not using cache because constant USE_CACHE is false".yellow()
+        );
         return parse(DATA_PATH);
     }
 
@@ -104,229 +113,96 @@ fn parse(file_path: &str) -> Result<Models> {
     let start = Instant::now();
 
     let f = File::open(file_path)?;
-    let reader = BufReader::new(f);
-    let mut bytes = reader.bytes().enumerate().peekable();
+    let reader = utf8_reader::Utf8Iter::new(BufReader::new(f));
+    let mut parser = ModelsParser::new();
+    match parser.parse(reader) {
+        Ok(()) => {}
+        Err(error) => {
+            println!(
+                "{} {}",
+                "Error parsing data from".red().bold(),
+                file_path.bold()
+            );
 
-    let mut models = Models::new();
+            match &error {
+                ParseError::UnterminatedInput { expected, closest } => {
+                    println!("Unterminated input (file ends too soon)");
+                    println!("Expected: {}", expected);
+                    println!(
+                        "Non-ASCII bytes: {:?}",
+                        expected
+                            .chars()
+                            .filter(|c| !c.is_ascii())
+                            .collect::<String>()
+                    );
+                    if let Some((closest, location)) = closest {
+                        println!(
+                            "Closest: {} at line {} column {}",
+                            closest,
+                            location.lines + 1,
+                            location.columns + 1
+                        );
+                    }
+                }
+                ParseError::InvalidUtf8 { bytes } => {
+                    println!(
+                        "Invalid UTF8 at line {} column {}",
+                        parser.line(),
+                        parser.column()
+                    );
+                    println!("Bytes: {:?}", bytes);
+                }
+                ParseError::IoError { error } => {
+                    println!("IO error: {}", error);
+                }
+                ParseError::DateParseError {
+                    invalid_date,
+                    error,
+                } => {
+                    println!("Error parsing date {}", invalid_date.bold());
 
-    loop {
-        match read_data_row(&mut bytes) {
-            Ok(data_row) => {
-                let data_row_copy = data_row.clone();
-                let channel =
-                    models.find_or_create_channel(&data_row.channel_url, &data_row.channel_name);
-                let video = models.find_or_create_video(data_row.url, data_row.title, channel);
+                    let non_ascii = invalid_date.chars().filter(|c| !c.is_ascii());
 
-                // Jun 29, 2021, 4:49:36 PM EDT
-                // Aug 9, 2019, 4:26:40 PM EDT
-                let date = chrono::Utc
-                    .datetime_from_str(data_row.date.as_str(), "%h %e, %Y, %I:%M:%S%p %Z")
-                    .expect(format!("Couldn't parse date from {:#?}", data_row_copy).as_str());
+                    if non_ascii.clone().count() > 0 {
+                        const LEFT_PADDING_LEN: usize = 19;
+                        print!("{}", " ".repeat(LEFT_PADDING_LEN));
 
-                models.insert_watched(date, WhereVideo::Reference(video));
-            }
-            Err(e) => {
-                if let Some(ParseError::UnterminatedInput {
-                    expected: _,
-                    position: _,
-                }) = e.downcast_ref::<ParseError>()
-                {
-                    if models.count_videos(WhereVideo::Any) == 0 {
-                        // If no videos were found, return an error
-                        return Err(e);
+                        for char in invalid_date.chars() {
+                            if !char.is_ascii() {
+                                print!("{}", "↑".yellow());
+                            } else {
+                                print!(" ");
+                            }
+                        }
+                        println!();
+                        println!(
+                            "{} {:x?}",
+                            "hint: non-ASCII characters:".yellow(),
+                            non_ascii.collect::<Vec<_>>()
+                        );
                     }
 
-                    // Otherwise, consider parsing complete
-                    break;
-                } else {
-                    return Err(e);
+                    println!("{}", error);
                 }
             }
+
+            return Err(error.clone().into());
         }
-    }
+    };
 
     println!("{} {:.2?}", "Parsed data in".dimmed(), start.elapsed());
-    Ok(models)
+
+    Ok(parser.to_models())
 }
 
 fn filter_ascii(string: &String) -> String {
     string.chars().filter(|c| c.is_ascii()).collect()
 }
 
-#[derive(Debug, Clone, Default)]
-struct DataRow {
-    url: String,
-    title: String,
-    channel_name: String,
-    channel_url: String,
-    date: String,
-}
-
-fn read_data_row(bytes: &mut Iter) -> Result<DataRow> {
-    let mut result = DataRow::default();
-
-    skip_to(bytes, ANCHOR_OPENING_TO_HREF.into())?;
-
-    result.url = filter_ascii(&read_until(bytes, '"'.into())?);
-
-    skip_to(bytes, ">".into())?;
-
-    result.title = filter_ascii(&read_until(bytes, "<".into())?.replace("\n", " "));
-
-    // Skip to just before the channel link
-    skip_to(bytes, "<br />".into())?;
-
-    // Check if the channel is present
-    match peek(bytes)? {
-        '<' => {
-            // Parse channel
-
-            skip_to(bytes, '"'.into())?;
-
-            result.channel_url = filter_ascii(&read_until(bytes, '"'.into())?);
-
-            skip_to(bytes, ">".into())?;
-
-            result.channel_name = filter_ascii(&read_until(bytes, "<".into())?.replace("\n", " "));
-
-            skip_to(bytes, "<br />".into())?;
-        }
-        'W' => {
-            // Sometimes, the channel is missing and instead it has the text
-            // "Watched at <time>". We skip this text to the start of the timestamp.
-            skip_to(bytes, "<br />".into())?;
-        }
-        _ => {
-            // No channel, we're at the timestamp.
-        }
-    }
-
-    result.date = filter_ascii(
-        &read_until(bytes, "\n".into())?
-            .replace("\u{a0}", " ")
-            .replace("\n", " "),
-    );
-
-    Ok(result)
-}
-
-// Returns the next char without advancing the iterator.
-fn peek(bytes: &mut Iter) -> Result<char> {
-    let starting_byte_index = iter_index(bytes);
-
-    match bytes.peek() {
-        Some((_, maybe_byte)) => {
-            let result = maybe_byte;
-            let byte = match result {
-                Ok(byte) => byte,
-                Err(e) => {
-                    // Copy io::Error. No idea why e.clone() doesn't work, but
-                    // that just creates another &Error. *e doesn't work because
-                    // io::Error doesn't implement Copy.
-                    let e = std::io::Error::new(e.kind(), e.to_string());
-                    return Err(e.into());
-                }
-            };
-            Ok(byte.clone() as char)
-        }
-        None => {
-            return Err(ParseError::UnterminatedInput {
-                expected: "1 more byte".into(),
-                position: starting_byte_index,
-            }
-            .into())
-        }
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{:#?}", self)
     }
 }
 
-// Builds a string from bytes until the given string is found. If the string
-// isn't found, the returned string will be the contents of bytes.
-fn read_until(bytes: &mut Iter, string: String) -> Result<String> {
-    let starting_byte_index = iter_index(bytes);
-
-    // index into the string
-    let mut i = 0;
-
-    let mut result = String::new();
-
-    for (_, maybe_byte) in bytes {
-        let byte = maybe_byte?;
-
-        if string.bytes().nth(i).unwrap() == byte {
-            i += 1;
-            if i == string.len() {
-                return Ok(result);
-            }
-        } else {
-            i = 0;
-        }
-
-        result.push(byte as char);
-    }
-
-    return Err(ParseError::UnterminatedInput {
-        expected: string,
-        position: starting_byte_index,
-    }
-    .into());
-}
-
-// Consumes bytes from the file until the given string is found. Returns
-// ParseError if the string isn't found.
-fn skip_to(bytes: &mut Iter, string: String) -> Result<()> {
-    let starting_byte_index = iter_index(bytes);
-
-    // index into the string; incremented as we see the correct bytes
-    let mut i = 0;
-
-    for (_, maybe_byte) in bytes {
-        let byte = maybe_byte?;
-
-        if string.bytes().nth(i).unwrap() == byte {
-            i += 1;
-            if i == string.len() {
-                return Ok(());
-            }
-        } else {
-            i = 0;
-        }
-    }
-
-    return Err(ParseError::UnterminatedInput {
-        expected: string,
-        position: starting_byte_index,
-    }
-    .into());
-}
-
-// Returns the index of the next byte in bytes (without advancing the iterator).
-fn iter_index(bytes: &mut Iter) -> usize {
-    match bytes.peek() {
-        Some((index, _)) => *index,
-        None => panic!("bytes is not peekable"),
-    }
-}
-
-//
-// Errors
-//
-
-#[derive(Debug, Clone)]
-enum ParseError {
-    UnterminatedInput { expected: String, position: usize },
-}
-
-impl fmt::Display for ParseError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "invalid input: ")?;
-        match self {
-            ParseError::UnterminatedInput { expected, position } => write!(
-                f,
-                "unterminated input; expected {} after position {}",
-                expected, position
-            ),
-        }
-    }
-}
-
-impl error::Error for ParseError {}
+impl std::error::Error for ParseError {}
