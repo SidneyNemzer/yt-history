@@ -184,6 +184,9 @@ fn parse(file_path: &str) -> Result<Models> {
 
                     println!("{}", error);
                 }
+                ParseError::NoRows => {
+                    println!("No rows found");
+                }
             }
 
             return Err(error.clone().into());

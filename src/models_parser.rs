@@ -10,6 +10,7 @@ use crate::utf8_reader::{NextUtf8, Utf8Iter};
 
 type Iter = Peekable<Enumerate<Utf8Iter<BufReader<File>>>>;
 
+// U+00A0 is a non-breaking space
 const ANCHOR_OPENING_TO_HREF: &str = "Watched\u{00A0}<a href=\"";
 
 pub struct ModelsParser {
@@ -49,17 +50,25 @@ impl ModelsParser {
         let mut chars = raw_chars.enumerate().peekable();
 
         // Ensure at least one row can be read
-        let row = self.next_data_row(&mut chars)?;
-        println!("Read row {:?}", &row);
-        self.insert_row(row)?;
+        match self.next_data_row(&mut chars)? {
+            Some(row) => {
+                self.insert_row(row)?;
+            }
+            None => {
+                return Err(ParseError::UnterminatedInput {
+                    expected: "data row".to_string(),
+                    closest: None,
+                });
+            }
+        };
 
         loop {
-            match self.next_data_row(&mut chars) {
-                Ok(row) => {
+            match self.next_data_row(&mut chars)? {
+                Some(row) => {
                     self.insert_row(row)?;
                 }
-                Err(_) => {
-                    // Errors after the first row are treated as EOF
+                None => {
+                    // No more rows
                     return Ok(());
                 }
             }
@@ -91,8 +100,12 @@ impl ModelsParser {
         // Examples:
         // Jun 29, 2021, 4:49:36 PM EDT
         // Aug 9, 2019, 4:26:40 PM EDT
+        //
+        // U+202F is a narrow non-breaking space
+        const DATE_FORMAT: &str = "%h %e, %Y, %I:%M:%S\u{202F}%p %Z";
+
         let date = chrono::Utc
-            .datetime_from_str(row.date.as_str(), "%h %e, %Y, %I:%M:%S\u{202f}%p %Z")
+            .datetime_from_str(row.date.as_str(), DATE_FORMAT)
             .map_err(|error| ParseError::DateParseError {
                 invalid_date: row.date,
                 error,
@@ -104,10 +117,23 @@ impl ModelsParser {
         Ok(())
     }
 
-    fn next_data_row(&mut self, chars: &mut Iter) -> Result<DataRow, ParseError> {
+    fn next_data_row(&mut self, chars: &mut Iter) -> Result<Option<DataRow>, ParseError> {
         let mut row = DataRow::default();
 
-        self.skip_to(chars, ANCHOR_OPENING_TO_HREF.into())?;
+        let skip_result = self.skip_to(chars, ANCHOR_OPENING_TO_HREF.into());
+        match skip_result {
+            Ok(()) => {}
+            Err(ParseError::UnterminatedInput {
+                expected: _,
+                closest: _,
+            }) => {
+                // Opening wasn't found before EOF, treat this as containing no
+                // more rows.
+                return Ok(None);
+            }
+            Err(e) => return Err(e),
+        }
+
         row.url = self.read_until(chars, "\"")?;
         self.skip_to(chars, ">")?;
         row.title = self.read_until(chars, "<")?;
@@ -134,7 +160,7 @@ impl ModelsParser {
 
         row.date = self.read_until(chars, "\n")?;
 
-        Ok(row)
+        Ok(Some(row))
     }
 
     fn skip_to(&mut self, chars: &mut Iter, s: &str) -> Result<(), ParseError> {
@@ -235,7 +261,7 @@ impl ModelsParser {
 
                 s_index += 1;
 
-                if s_index == s.len() {
+                if s_index == s.chars().count() {
                     return Ok(read);
                 }
             } else {
@@ -296,6 +322,7 @@ pub enum ParseError {
         invalid_date: String,
         error: chrono::ParseError,
     },
+    NoRows,
 }
 
 impl From<NextUtf8> for std::result::Result<char, ParseError> {
