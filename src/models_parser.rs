@@ -1,5 +1,4 @@
-use std::fs::File;
-use std::io::BufReader;
+use std::io::Read;
 use std::iter::Enumerate;
 use std::iter::Peekable;
 
@@ -8,7 +7,7 @@ use chrono::TimeZone;
 use crate::model::{Models, WhereVideo};
 use crate::utf8_reader::{NextUtf8, Utf8Iter};
 
-type Iter = Peekable<Enumerate<Utf8Iter<BufReader<File>>>>;
+type Iter<R> = Peekable<Enumerate<Utf8Iter<R>>>;
 
 // U+00A0 is a non-breaking space
 const ANCHOR_OPENING_TO_HREF: &str = "Watched\u{00A0}<a href=\"";
@@ -46,7 +45,7 @@ impl ModelsParser {
         }
     }
 
-    pub fn parse(&mut self, raw_chars: Utf8Iter<BufReader<File>>) -> Result<(), ParseError> {
+    pub fn parse<R: Read>(&mut self, raw_chars: Utf8Iter<R>) -> Result<(), ParseError> {
         let mut chars = raw_chars.enumerate().peekable();
 
         // Ensure at least one row can be read
@@ -117,7 +116,10 @@ impl ModelsParser {
         Ok(())
     }
 
-    fn next_data_row(&mut self, chars: &mut Iter) -> Result<Option<DataRow>, ParseError> {
+    fn next_data_row<R: Read>(
+        &mut self,
+        chars: &mut Iter<R>,
+    ) -> Result<Option<DataRow>, ParseError> {
         let mut row = DataRow::default();
 
         let skip_result = self.skip_to(chars, ANCHOR_OPENING_TO_HREF.into());
@@ -163,11 +165,11 @@ impl ModelsParser {
         Ok(Some(row))
     }
 
-    fn skip_to(&mut self, chars: &mut Iter, s: &str) -> Result<(), ParseError> {
-        let mut closest = String::new();
+    fn skip_to<R: Read>(&mut self, chars: &mut Iter<R>, s: &str) -> Result<(), ParseError> {
+        let mut closest = String::with_capacity(s.len());
         let mut closest_location = Location::default();
 
-        let mut found = String::new();
+        let mut found = String::with_capacity(s.len());
         let mut found_location = Location::default();
 
         for (_, maybe_char) in chars {
@@ -181,10 +183,15 @@ impl ModelsParser {
                 self.column += 1;
             }
 
-            let want = s.chars().nth(found.chars().count()).expect(&format!(
-                "skip_to: found out of sync with s (s: {}, found: {})",
-                s, found
-            ));
+            let want = match s.chars().nth(found.chars().count()) {
+                Some(c) => c,
+                None => {
+                    panic!(
+                        "skip_to internal desync: `found` is longer than s (s: {}, found: {})",
+                        s, found
+                    )
+                }
+            };
 
             if want == char {
                 if found.len() == 0 {
@@ -209,8 +216,7 @@ impl ModelsParser {
                     }
                 }
 
-                found = String::new();
-                found_location = Location::default()
+                found.clear();
             }
         }
 
@@ -225,11 +231,11 @@ impl ModelsParser {
         .into()
     }
 
-    fn read_until(&mut self, chars: &mut Iter, s: &str) -> Result<String, ParseError> {
-        let mut closest = String::new();
+    fn read_until<R: Read>(&mut self, chars: &mut Iter<R>, s: &str) -> Result<String, ParseError> {
+        let mut closest = String::with_capacity(s.len());
         let mut closest_location = Location::default();
 
-        let mut found = String::new();
+        let mut found = String::with_capacity(s.len());
         let mut found_location = Location::default();
 
         let mut read = String::new();
@@ -245,10 +251,15 @@ impl ModelsParser {
                 self.column += 1;
             }
 
-            let want = s
-                .chars()
-                .nth(found.chars().count())
-                .expect("read_until: s_index out of sync with s");
+            let want = match s.chars().nth(found.chars().count()) {
+                Some(c) => c,
+                None => {
+                    panic!(
+                        "read_until internal desync: `found` is longer than s (s: {}, found: {})",
+                        s, found
+                    )
+                }
+            };
 
             if want == char {
                 // Found part of string, don't add this to read
@@ -279,8 +290,7 @@ impl ModelsParser {
                     // Append what we saw to read.
                     push_collapse_whitespace(&mut read, &found);
 
-                    found = String::new();
-                    found_location = Location::default();
+                    found.clear();
                 } else {
                     push_collapse_whitespace(&mut read, &String::from(char));
                 }
@@ -298,7 +308,7 @@ impl ModelsParser {
         .into()
     }
 
-    fn peek(&mut self, chars: &mut Iter) -> Result<char, ParseError> {
+    fn peek<R: Read>(&mut self, chars: &mut Iter<R>) -> Result<char, ParseError> {
         match chars.peek() {
             Some((_, maybe_char)) => {
                 let char = std::result::Result::<char, ParseError>::from(maybe_char.clone())?;
