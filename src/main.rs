@@ -198,10 +198,6 @@ fn parse(file_path: &str) -> Result<Models> {
     Ok(parser.to_models())
 }
 
-fn filter_ascii(string: &String) -> String {
-    string.chars().filter(|c| c.is_ascii()).collect()
-}
-
 impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{:#?}", self)
