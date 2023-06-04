@@ -23,22 +23,20 @@ fn main() -> Result<()> {
     let models = match load_models() {
         Ok(models) => models,
         Err(error) => {
-            if error.downcast_ref::<ParseError>().is_some() {
-                return Ok(());
+            // ParseError is logged in parse(), only log other errors
+            if error.downcast_ref::<ParseError>().is_none() {
+                println!("{} {}", "Error:".red(), error);
             }
 
-            println!("{} {}", "Error:".red(), error);
-
-            return Ok(());
+            std::process::exit(1);
         }
     };
 
     println!(
-        "{} {} {} {} {} {}",
+        "{} {} {} {} {}",
         "History contains".dimmed(),
         models.count_videos(WhereVideo::Any),
-        "unique videos".dimmed(),
-        "and".dimmed(),
+        "unique videos and".dimmed(),
         models.count_watches(WhereWatched::Any),
         "watches".dimmed(),
     );
