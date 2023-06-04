@@ -1,17 +1,15 @@
 mod model;
-mod models_parser;
+mod parser;
 mod pipe;
 mod utf8_reader;
 
 use colored::Colorize;
-use models_parser::ParseError;
 use std::fs::File;
 use std::io::prelude::*;
-use std::io::BufReader;
 use std::time::Instant;
 
 use crate::model::{Models, WhereVideo, WhereWatched};
-use crate::models_parser::ModelsParser;
+use crate::parser::ParseError;
 
 const USE_CACHE: bool = false;
 const DATA_PATH: &str = "data/watch-history.html";
@@ -110,96 +108,95 @@ fn load_cache() -> Result<Models> {
 fn parse(file_path: &str) -> Result<Models> {
     let start = Instant::now();
 
-    let f = File::open(file_path)?;
-    let reader = utf8_reader::Utf8Iter::new(BufReader::new(f));
-    let mut parser = ModelsParser::new();
-    match parser.parse(reader) {
-        Ok(()) => {}
-        Err(error) => {
-            println!(
-                "{} {}",
-                "Error parsing data from".red().bold(),
-                file_path.bold()
-            );
+    let result = parser::parse_file(file_path, parser::ParserType::Html);
+    match result {
+        Ok(models) => {
+            println!("{} {:.2?}", "Parsed data in".dimmed(), start.elapsed());
 
-            match &error {
-                ParseError::UnterminatedInput { expected, closest } => {
-                    println!("Unterminated input (file ends too soon)");
-                    println!("Expected: {}", expected);
-                    println!(
-                        "Non-ASCII bytes: {:?}",
-                        expected
-                            .chars()
-                            .filter(|c| !c.is_ascii())
-                            .collect::<String>()
-                    );
-                    if let Some((closest, location)) = closest {
-                        println!(
-                            "Closest: {} at line {} column {}",
-                            closest,
-                            location.lines + 1,
-                            location.columns + 1
-                        );
-                    }
-                }
-                ParseError::InvalidUtf8 { bytes } => {
-                    println!(
-                        "Invalid UTF8 at line {} column {}",
-                        parser.line(),
-                        parser.column()
-                    );
-                    println!("Bytes: {:?}", bytes);
-                }
-                ParseError::IoError { error } => {
-                    println!("IO error: {}", error);
-                }
-                ParseError::DateParseError {
-                    invalid_date,
-                    error,
-                } => {
-                    println!("Error parsing date {}", invalid_date.bold());
+            Ok(models)
+        }
+        Err(e) => {
+            println!("{} {:.2?}", "Errored in".dimmed(), start.elapsed());
 
-                    let non_ascii = invalid_date.chars().filter(|c| !c.is_ascii());
+            if let Some(e) = e.downcast_ref::<ParseError>() {
+                println!("{} {}", "Error parsing file".red(), file_path.bold());
 
-                    if non_ascii.clone().count() > 0 {
-                        const LEFT_PADDING_LEN: usize = 19;
-                        print!("{}", " ".repeat(LEFT_PADDING_LEN));
-
-                        for char in invalid_date.chars() {
-                            if !char.is_ascii() {
-                                print!("{}", "↑".yellow());
-                            } else {
-                                print!(" ");
-                            }
-                        }
-                        println!();
-                        println!(
-                            "{} {:x?}",
-                            "hint: non-ASCII characters:".yellow(),
-                            non_ascii.collect::<Vec<_>>()
-                        );
-                    }
-
-                    println!("{}", error);
-                }
-                ParseError::NoRows => {
-                    println!("No rows found");
-                }
+                print_parse_error(e);
             }
 
-            return Err(error.clone().into());
+            Err(e)
         }
-    };
-
-    println!("{} {:.2?}", "Parsed data in".dimmed(), start.elapsed());
-
-    Ok(parser.to_models())
-}
-
-impl std::fmt::Display for ParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{:#?}", self)
     }
 }
 
-impl std::error::Error for ParseError {}
+fn print_parse_error(error: &ParseError) {
+    match error {
+        ParseError::UnterminatedInput { expected, closest } => {
+            println!("Unterminated input (file ends too soon)");
+            println!("Expected: {}", expected);
+            println!(
+                "Non-ASCII bytes: {:?}",
+                expected
+                    .chars()
+                    .filter(|c| !c.is_ascii())
+                    .collect::<String>()
+            );
+            if let Some((closest, location)) = closest {
+                println!(
+                    "Closest: {} at line {} column {}",
+                    closest,
+                    location.lines + 1,
+                    location.columns + 1
+                );
+            }
+        }
+        ParseError::InvalidUtf8 { location, bytes } => {
+            println!(
+                "Invalid UTF8 at line {} column {}",
+                location.lines, location.columns
+            );
+            println!("Bytes: {:?}", bytes);
+        }
+        ParseError::IoError { location: _, error } => {
+            println!("IO error: {}", error);
+        }
+        ParseError::DateParseError {
+            location,
+            invalid_date,
+            error,
+        } => {
+            println!(
+                "Error parsing date {} at line {} column {}",
+                invalid_date.bold(),
+                location.lines,
+                location.columns
+            );
+
+            let non_ascii = invalid_date.chars().filter(|c| !c.is_ascii());
+
+            if non_ascii.clone().count() > 0 {
+                const LEFT_PADDING_LEN: usize = 19;
+                print!("{}", " ".repeat(LEFT_PADDING_LEN));
+
+                for char in invalid_date.chars() {
+                    if !char.is_ascii() {
+                        print!("{}", "↑".yellow());
+                    } else {
+                        print!(" ");
+                    }
+                }
+                println!();
+                println!(
+                    "{} {:x?}",
+                    "hint: non-ASCII characters:".yellow(),
+                    non_ascii.collect::<Vec<_>>()
+                );
+            }
+
+            println!("{}", error);
+        }
+        ParseError::NoRows => {
+            println!("No rows found");
+        }
+    }
+}

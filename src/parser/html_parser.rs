@@ -5,12 +5,20 @@ use std::iter::Peekable;
 use chrono::TimeZone;
 
 use crate::model::{Models, WhereVideo};
-use crate::utf8_reader::{NextUtf8, Utf8Iter};
+use crate::utf8_reader;
+use crate::utf8_reader::Utf8Iter;
 
 type Iter<R> = Peekable<Enumerate<Utf8Iter<R>>>;
 
 // U+00A0 is a non-breaking space
 const ANCHOR_OPENING_TO_HREF: &str = "Watched\u{00A0}<a href=\"";
+
+// Examples:
+// Jun 29, 2021, 4:49:36 PM EDT
+// Aug 9, 2019, 4:26:40 PM EDT
+//
+// U+202F is a narrow non-breaking space
+const DATE_FORMAT: &str = "%h %e, %Y, %I:%M:%S\u{202F}%p %Z";
 
 pub struct ModelsParser {
     models: Models,
@@ -19,13 +27,25 @@ pub struct ModelsParser {
     chars_read: usize,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 struct DataRow {
     url: String,
     title: String,
     channel_name: String,
     channel_url: String,
-    date: String,
+    date: chrono::DateTime<chrono::Utc>,
+}
+
+impl Default for DataRow {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            title: String::new(),
+            channel_name: String::new(),
+            channel_url: String::new(),
+            date: chrono::DateTime::<chrono::Utc>::MIN_UTC,
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -54,10 +74,7 @@ impl ModelsParser {
                 self.insert_row(row)?;
             }
             None => {
-                return Err(ParseError::UnterminatedInput {
-                    expected: "data row".to_string(),
-                    closest: None,
-                });
+                return Err(ParseError::NoRows);
             }
         };
 
@@ -88,6 +105,14 @@ impl ModelsParser {
         self.column + 1
     }
 
+    pub fn location(&self) -> Location {
+        Location {
+            chars: self.chars_read,
+            columns: self.column(),
+            lines: self.line(),
+        }
+    }
+
     fn insert_row(&mut self, row: DataRow) -> Result<(), ParseError> {
         let channel = self
             .models
@@ -96,22 +121,8 @@ impl ModelsParser {
             .models
             .find_or_create_video(row.url, row.title, channel);
 
-        // Examples:
-        // Jun 29, 2021, 4:49:36 PM EDT
-        // Aug 9, 2019, 4:26:40 PM EDT
-        //
-        // U+202F is a narrow non-breaking space
-        const DATE_FORMAT: &str = "%h %e, %Y, %I:%M:%S\u{202F}%p %Z";
-
-        let date = chrono::Utc
-            .datetime_from_str(row.date.as_str(), DATE_FORMAT)
-            .map_err(|error| ParseError::DateParseError {
-                invalid_date: row.date,
-                error,
-            })?;
-
         self.models
-            .insert_watched(date, WhereVideo::Reference(video));
+            .insert_watched(row.date, WhereVideo::Reference(video));
 
         Ok(())
     }
@@ -160,7 +171,14 @@ impl ModelsParser {
             _ => (),
         }
 
-        row.date = self.read_until(chars, "\n")?;
+        let date_string = self.read_until(chars, "\n")?;
+        row.date = chrono::Utc
+            .datetime_from_str(date_string.as_str(), DATE_FORMAT)
+            .map_err(|error| ParseError::DateParseError {
+                location: self.location(),
+                invalid_date: date_string,
+                error,
+            })?;
 
         Ok(Some(row))
     }
@@ -173,7 +191,7 @@ impl ModelsParser {
         let mut found_location = Location::default();
 
         for (_, maybe_char) in chars {
-            let char = Result::<char, ParseError>::from(maybe_char)?;
+            let char = maybe_char.map_err(|e| ParseError::from_utf8_error(&e, self.location()))?;
             self.chars_read += 1;
 
             if char == '\n' {
@@ -241,7 +259,7 @@ impl ModelsParser {
         let mut read = String::new();
 
         for (_, maybe_char) in chars {
-            let char = Result::<char, ParseError>::from(maybe_char)?;
+            let char = maybe_char.map_err(|e| ParseError::from_utf8_error(&e, self.location()))?;
             self.chars_read += 1;
 
             if char == '\n' {
@@ -310,10 +328,8 @@ impl ModelsParser {
 
     fn peek<R: Read>(&mut self, chars: &mut Iter<R>) -> Result<char, ParseError> {
         match chars.peek() {
-            Some((_, maybe_char)) => {
-                let char = std::result::Result::<char, ParseError>::from(maybe_char.clone())?;
-                Ok(char)
-            }
+            Some((_, Ok(char))) => Ok(*char),
+            Some((_, Err(e))) => Err(ParseError::from_utf8_error(e, self.location())),
             None => Err(ParseError::UnterminatedInput {
                 expected: "any character".into(),
                 closest: None,
@@ -355,32 +371,44 @@ pub enum ParseError {
         closest: Option<(String, Location)>,
     },
     InvalidUtf8 {
+        location: Location,
         bytes: Vec<u8>,
     },
     IoError {
+        location: Location,
         error: String,
     },
     DateParseError {
+        location: Location,
         invalid_date: String,
         error: chrono::ParseError,
     },
     NoRows,
 }
 
-impl From<NextUtf8> for Result<char, ParseError> {
-    fn from(next: NextUtf8) -> Self {
-        match next {
-            NextUtf8::Valid(char) => Ok(char),
-            NextUtf8::InvalidBytes(bytes) => Err(ParseError::InvalidUtf8 {
+impl ParseError {
+    fn from_utf8_error(error: &utf8_reader::Error, location: Location) -> ParseError {
+        match error {
+            utf8_reader::Error::InvalidBytes(bytes) => ParseError::InvalidUtf8 {
+                location,
                 bytes: bytes.to_vec(),
-            }),
-            NextUtf8::IoError(error) => Err(ParseError::IoError {
+            },
+            utf8_reader::Error::IoError(error) => ParseError::IoError {
+                location,
                 error: error.to_string(),
-            }),
-            NextUtf8::End => Err(ParseError::UnterminatedInput {
-                closest: None,
+            },
+            utf8_reader::Error::End => ParseError::UnterminatedInput {
                 expected: "1 more character".into(),
-            }),
+                closest: None,
+            },
         }
     }
 }
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{:#?}", self)
+    }
+}
+
+impl std::error::Error for ParseError {}

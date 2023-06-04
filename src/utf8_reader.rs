@@ -1,12 +1,14 @@
 use std::io::Read;
 use std::str;
 
+// Ideas:
+// - Buffer in a u32 or u64
+// - Buffer in a Ring Buffer
+// - Buffer in a Vec<u8>
+
 /// The maximum number of bytes in a valid UTF-8 code point. Not all 32-bit
 /// numbers are valid UTF-8 code points. Validation is done by the rust built-in
 /// String type.
-///
-/// We can make the internally buffer exactly this size and the underlying
-/// reader will buffer data somewhere (probably in the kernel).
 ///
 /// Source: https://www.unicode.org/versions/Unicode15.0.0/UnicodeStandard-15.0.pdf
 /// Section 3.9, Definition D92
@@ -23,10 +25,7 @@ where
 }
 
 #[derive(Debug)]
-pub enum NextUtf8 {
-    /// A single valid UTF-8 character was read. More characters may be
-    /// buffered.
-    Valid(char),
+pub enum Error {
     /// An invalid UTF-8 character was read. Calling next() again skips the
     /// invalid bytes.
     InvalidBytes(Vec<u8>),
@@ -38,10 +37,9 @@ pub enum NextUtf8 {
     End,
 }
 
-impl Clone for NextUtf8 {
+impl Clone for Error {
     fn clone(&self) -> Self {
         match self {
-            Self::Valid(c) => Self::Valid(c.clone()),
             Self::InvalidBytes(b) => Self::InvalidBytes(b.clone()),
             Self::IoError(e) => Self::IoError(std::io::Error::new(e.kind(), e.to_string())),
             Self::End => Self::End,
@@ -49,13 +47,12 @@ impl Clone for NextUtf8 {
     }
 }
 
-impl PartialEq<NextUtf8> for NextUtf8 {
-    fn eq(&self, other: &NextUtf8) -> bool {
+impl PartialEq<Error> for Error {
+    fn eq(&self, other: &Error) -> bool {
         match (self, other) {
-            (NextUtf8::Valid(a), NextUtf8::Valid(b)) => a == b,
-            (NextUtf8::InvalidBytes(a), NextUtf8::InvalidBytes(b)) => a == b,
-            (NextUtf8::IoError(a), NextUtf8::IoError(b)) => a.kind() == b.kind(),
-            (NextUtf8::End, NextUtf8::End) => true,
+            (Error::InvalidBytes(a), Error::InvalidBytes(b)) => a == b,
+            (Error::IoError(a), Error::IoError(b)) => a.kind() == b.kind(),
+            (Error::End, Error::End) => true,
             _ => false,
         }
     }
@@ -79,12 +76,12 @@ impl<R: Read> Utf8Iter<R> {
     /// the file. For sockets or pipes, the socket/pipe is empty. However next()
     /// could return data again in the future. Files can have data appended and
     /// sockets/pipes can receive data.
-    pub fn next(&mut self) -> NextUtf8 {
+    pub fn next(&mut self) -> Result<char, Error> {
         loop {
             match self.reader.read(self.buf[self.buf_len..].as_mut()) {
                 Ok(0) => {
                     if self.buf_len == 0 {
-                        return NextUtf8::End;
+                        return Err(Error::End);
                     }
                 }
                 Ok(n) => {
@@ -92,7 +89,7 @@ impl<R: Read> Utf8Iter<R> {
                     self.bytes_read += n;
                 }
                 Err(e) => {
-                    return NextUtf8::IoError(e);
+                    return Err(Error::IoError(e));
                 }
             }
 
@@ -101,7 +98,7 @@ impl<R: Read> Utf8Iter<R> {
                     let c = s.chars().next().unwrap();
                     self.buf.copy_within(c.len_utf8().., 0);
                     self.buf_len -= c.len_utf8();
-                    return NextUtf8::Valid(c);
+                    return Ok(c);
                 }
                 Err(e) => {
                     if e.valid_up_to() > 0 {
@@ -115,7 +112,7 @@ impl<R: Read> Utf8Iter<R> {
                         self.buf.copy_within(remaining_buffer_range, 0);
                         self.buf_len = self.buf_len - removed_bytes;
 
-                        return NextUtf8::Valid(char);
+                        return Ok(char);
                     }
 
                     match e.error_len() {
@@ -126,7 +123,7 @@ impl<R: Read> Utf8Iter<R> {
                             self.buf.copy_within(n..MAX_BYTES_UTF8_CODE_POINT, 0);
                             self.buf_len = self.buf_len - n;
 
-                            return NextUtf8::InvalidBytes(invalid_bytes);
+                            return Err(Error::InvalidBytes(invalid_bytes));
                         }
                         None => {
                             continue;
@@ -139,11 +136,11 @@ impl<R: Read> Utf8Iter<R> {
 }
 
 impl<R: Read> Iterator for Utf8Iter<R> {
-    type Item = NextUtf8;
+    type Item = Result<char, Error>;
 
-    fn next(&mut self) -> Option<NextUtf8> {
+    fn next(&mut self) -> Option<Result<char, Error>> {
         match self.next() {
-            NextUtf8::End => None,
+            Err(Error::End) => None,
             next => Some(next),
         }
     }
@@ -160,11 +157,11 @@ mod tests {
         let (mut reader, mut writer) = pipe::async_pipe_buffered();
 
         let mut iter = Utf8Iter::new(&mut reader);
-        assert_eq!(iter.next(), NextUtf8::End);
+        assert_eq!(iter.next(), Err(Error::End));
 
         writer.write_all(vec![0x61].as_slice()).unwrap();
-        assert_eq!(iter.next(), NextUtf8::Valid('a'));
-        assert_eq!(iter.next(), NextUtf8::End);
+        assert_eq!(iter.next(), Ok('a'));
+        assert_eq!(iter.next(), Err(Error::End));
     }
 
     #[test]
@@ -172,8 +169,8 @@ mod tests {
         let mut reader = std::io::Cursor::new(vec![0x61]);
         let mut iter = Utf8Iter::new(&mut reader);
 
-        assert_eq!(iter.next(), NextUtf8::Valid('a'));
-        assert_eq!(iter.next(), NextUtf8::End);
+        assert_eq!(iter.next(), Ok('a'));
+        assert_eq!(iter.next(), Err(Error::End));
     }
 
     #[test]
@@ -181,11 +178,11 @@ mod tests {
         let mut reader = std::io::Cursor::new(vec![0x61, 0x61, 0x61, 0x61]);
         let mut iter = Utf8Iter::new(&mut reader);
 
-        assert_eq!(iter.next(), NextUtf8::Valid('a'));
-        assert_eq!(iter.next(), NextUtf8::Valid('a'));
-        assert_eq!(iter.next(), NextUtf8::Valid('a'));
-        assert_eq!(iter.next(), NextUtf8::Valid('a'));
-        assert_eq!(iter.next(), NextUtf8::End);
+        assert_eq!(iter.next(), Ok('a'));
+        assert_eq!(iter.next(), Ok('a'));
+        assert_eq!(iter.next(), Ok('a'));
+        assert_eq!(iter.next(), Ok('a'));
+        assert_eq!(iter.next(), Err(Error::End));
     }
 
     #[test]
@@ -193,8 +190,8 @@ mod tests {
         let mut reader = std::io::Cursor::new(vec![0xC0]);
         let mut iter = Utf8Iter::new(&mut reader);
 
-        assert_eq!(iter.next(), NextUtf8::InvalidBytes(vec![0xC0]));
-        assert_eq!(iter.next(), NextUtf8::End);
+        assert_eq!(iter.next(), Err(Error::InvalidBytes(vec![0xC0])));
+        assert_eq!(iter.next(), Err(Error::End));
     }
 
     #[test]
@@ -202,9 +199,9 @@ mod tests {
         let mut reader = std::io::Cursor::new(vec![0xE0, 0x61]);
         let mut iter = Utf8Iter::new(&mut reader);
 
-        assert_eq!(iter.next(), NextUtf8::InvalidBytes(vec![0xE0]));
-        assert_eq!(iter.next(), NextUtf8::Valid('a'));
-        assert_eq!(iter.next(), NextUtf8::End);
+        assert_eq!(iter.next(), Err(Error::InvalidBytes(vec![0xE0])));
+        assert_eq!(iter.next(), Ok('a'));
+        assert_eq!(iter.next(), Err(Error::End));
     }
 
     #[test]
@@ -212,10 +209,10 @@ mod tests {
         let mut reader = std::io::Cursor::new(vec![0x61, 0x61, 0x61, 0xC0]);
         let mut iter = Utf8Iter::new(&mut reader);
 
-        assert_eq!(iter.next(), NextUtf8::Valid('a'));
-        assert_eq!(iter.next(), NextUtf8::Valid('a'));
-        assert_eq!(iter.next(), NextUtf8::Valid('a'));
-        assert_eq!(iter.next(), NextUtf8::InvalidBytes(vec![0xC0]));
-        assert_eq!(iter.next(), NextUtf8::End);
+        assert_eq!(iter.next(), Ok('a'));
+        assert_eq!(iter.next(), Ok('a'));
+        assert_eq!(iter.next(), Ok('a'));
+        assert_eq!(iter.next(), Err(Error::InvalidBytes(vec![0xC0])));
+        assert_eq!(iter.next(), Err(Error::End));
     }
 }
