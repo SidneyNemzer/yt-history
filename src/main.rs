@@ -3,22 +3,35 @@ mod parser;
 mod pipe;
 mod utf8_reader;
 
-use colored::Colorize;
+use std::env;
 use std::fs::File;
 use std::io::prelude::*;
 use std::time::Instant;
 
+use colored::Colorize;
+
 use crate::model::{Models, WhereVideo, WhereWatched};
 use crate::parser::ParseError;
 
+const COMMAND_NAME: &str = "yt-history";
 const USE_CACHE: bool = false;
-const DATA_PATH: &str = "data/watch-history.html";
+const DEFAULT_DATA_PATH: &str = "data/watch-history.html";
 const CACHE_PATH: &str = "data/cache.json";
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 fn main() -> Result<()> {
-    let models = match load_models() {
+    let args = env::args().skip(1).collect::<Vec<_>>();
+
+    if args.len() > 1 {
+        println!("{} {}", "Error:".red(), "Too many arguments".bold());
+        print_usage();
+        std::process::exit(1);
+    }
+
+    let data_path: &str = args.get(0).map(|s| s.as_str()).unwrap_or(DEFAULT_DATA_PATH);
+
+    let models = match load_models(data_path) {
         Ok(models) => models,
         Err(error) => {
             // ParseError is logged in parse(), only log other errors
@@ -43,9 +56,16 @@ fn main() -> Result<()> {
     let mut counts = video_watches.iter().collect::<Vec<_>>();
     counts.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
 
+    const COUNT: usize = 50;
+
     println!();
-    println!("{}", "Top 10 most watched videos".bold());
-    for (i, (_, (count, video))) in counts.iter().enumerate().take(10) {
+    println!(
+        "{} {} {}",
+        "Top".bold(),
+        format!("{}", COUNT).bold(),
+        "most watched videos".bold()
+    );
+    for (i, (_, (count, video))) in counts.iter().enumerate().take(COUNT) {
         let s = if *count != 1 { "s" } else { "" };
 
         println!(
@@ -62,13 +82,13 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn load_models() -> Result<Models> {
+fn load_models(data_path: &str) -> Result<Models> {
     if !USE_CACHE {
         println!(
             "{}",
             "Not using cache because constant USE_CACHE is false".yellow()
         );
-        return parse(DATA_PATH);
+        return parse(data_path);
     }
 
     // Try loading cache
@@ -80,7 +100,7 @@ fn load_models() -> Result<Models> {
             e.to_string().dimmed()
         );
 
-        let models = parse(DATA_PATH)?;
+        let models = parse(data_path)?;
 
         let mut file = File::create(CACHE_PATH)?;
         write!(file, "{}", models.to_string())?;
@@ -88,6 +108,10 @@ fn load_models() -> Result<Models> {
 
         Ok(models)
     });
+}
+
+fn print_usage() {
+    println!("Usage: {} [file]", COMMAND_NAME);
 }
 
 fn load_cache() -> Result<Models> {
@@ -106,9 +130,17 @@ fn load_cache() -> Result<Models> {
 }
 
 fn parse(file_path: &str) -> Result<Models> {
+    println!("{} {}", "Reading file".dimmed(), file_path.bold());
+
+    let file_type = if file_path.ends_with(".json") {
+        parser::ParserType::Json
+    } else {
+        parser::ParserType::Html
+    };
+
     let start = Instant::now();
 
-    let result = parser::parse_file(file_path, parser::ParserType::Html);
+    let result = parser::parse_file(file_path, file_type);
     match result {
         Ok(models) => {
             println!("{} {:.2?}", "Parsed data in".dimmed(), start.elapsed());

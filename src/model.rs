@@ -1,4 +1,4 @@
-use chrono::Utc;
+use chrono::{FixedOffset, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -55,13 +55,13 @@ struct ScalarVideo {
 #[derive(Debug, PartialEq, Clone)]
 pub struct Watched {
     pub video: Rc<Video>,
-    pub when: chrono::DateTime<Utc>,
+    pub when: chrono::DateTime<FixedOffset>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 struct ScalarWatched {
     video: <Video as Model>::Id,
-    when: chrono::DateTime<Utc>,
+    when: chrono::DateTime<FixedOffset>,
 }
 
 #[derive(Debug)]
@@ -134,7 +134,11 @@ impl Models {
         counts
     }
 
-    pub fn insert_watched(&mut self, when: chrono::DateTime<Utc>, video: WhereVideo) -> Watched {
+    pub fn insert_watched(
+        &mut self,
+        when: chrono::DateTime<FixedOffset>,
+        video: WhereVideo,
+    ) -> Watched {
         let video = self.find_video(video).unwrap().clone();
         let watched = Watched { video, when };
         self.watches.push(watched.clone());

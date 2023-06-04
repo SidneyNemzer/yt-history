@@ -33,7 +33,7 @@ struct DataRow {
     title: String,
     channel_name: String,
     channel_url: String,
-    date: chrono::DateTime<chrono::Utc>,
+    date: chrono::DateTime<chrono::FixedOffset>,
 }
 
 impl Default for DataRow {
@@ -43,7 +43,7 @@ impl Default for DataRow {
             title: String::new(),
             channel_name: String::new(),
             channel_url: String::new(),
-            date: chrono::DateTime::<chrono::Utc>::MIN_UTC,
+            date: chrono::DateTime::<chrono::FixedOffset>::MIN_UTC.into(),
         }
     }
 }
@@ -178,7 +178,8 @@ impl ModelsParser {
                 location: self.location(),
                 invalid_date: date_string,
                 error,
-            })?;
+            })?
+            .into();
 
         Ok(Some(row))
     }

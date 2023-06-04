@@ -1,4 +1,5 @@
 mod html_parser;
+mod json_parser;
 
 use std::error::Error;
 use std::io::BufReader;
@@ -11,6 +12,7 @@ pub use html_parser::ParseError;
 
 pub enum ParserType {
     Html,
+    Json,
 }
 
 pub fn parse_file(file_path: &str, parser_type: ParserType) -> Result<Models, Box<dyn Error>> {
@@ -27,5 +29,6 @@ pub fn parser<F: Read>(parser_type: ParserType, data: F) -> Result<Models, Box<d
                 Err(error) => Err(error.into()),
             }
         }
+        ParserType::Json => json_parser::parse(data).map_err(|e| e.into()),
     }
 }
