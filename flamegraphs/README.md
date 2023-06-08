@@ -6,6 +6,7 @@
 4. `04-fd4689.svg` -- Parsed in 989.0 ms. Generated with `cargo flamegraph -F 10000`. (Reverted due to performance regression).
 5. `05-5c29ad.svg` -- Parsed in 336.4 ms. Generated with `cargo flamegraph -F 10000`.
 6. `06-982801.svg` -- Parsed in 1.70 seconds. Generated with `cargo flamegraph -F 10000`.
+7. `07-23fe1f.svg` -- Parsed in 182.3 ms. Generated with `cargo flamegraph -F 10000 -- data/watch-history.json`.
 
 Files in this directory document performance changes over time. They're created with Flamegraph. See below for setup instructions.
 
