@@ -136,10 +136,7 @@ impl ModelsParser {
         let skip_result = self.skip_to(chars, ANCHOR_OPENING_TO_HREF.into());
         match skip_result {
             Ok(()) => {}
-            Err(ParseError::UnterminatedInput {
-                expected: _,
-                closest: _,
-            }) => {
+            Err(ParseError::UnterminatedInput { .. }) => {
                 // Opening wasn't found before EOF, treat this as containing no
                 // more rows.
                 return Ok(None);

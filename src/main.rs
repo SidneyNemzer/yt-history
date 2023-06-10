@@ -189,7 +189,7 @@ fn print_parse_error(error: &ParseError) {
             );
             println!("Bytes: {:?}", bytes);
         }
-        ParseError::IoError { location: _, error } => {
+        ParseError::IoError { error, .. } => {
             println!("IO error: {}", error);
         }
         ParseError::DateParseError {
