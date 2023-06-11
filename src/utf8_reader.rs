@@ -1,10 +1,13 @@
 use std::io::Read;
 use std::str;
 
-// Ideas:
+// Performance ideas:
 // - Buffer in a u32 or u64
 // - Buffer in a Ring Buffer
-// - Buffer in a Vec<u8>
+// - ~Buffer in a Vec<u8>~ done, seems to involve too much copying when removing
+//   from the front of the vec
+// - ~Buffer in a reversed Vec<u8>~ done, improves performance over single
+//   character buffer
 
 /// The maximum number of bytes in a valid UTF-8 code point. Not all 32-bit
 /// numbers are valid UTF-8 code points. Validation is done by the rust built-in
@@ -13,6 +16,7 @@ use std::str;
 /// Source: https://www.unicode.org/versions/Unicode15.0.0/UnicodeStandard-15.0.pdf
 /// Section 3.9, Definition D92
 const MAX_BYTES_UTF8_CODE_POINT: usize = 4;
+const BUFFER_SIZE: usize = MAX_BYTES_UTF8_CODE_POINT * 1024;
 
 pub struct Utf8Iter<R>
 where
@@ -20,7 +24,8 @@ where
 {
     bytes_read: usize,
     reader: R,
-    buf: [u8; MAX_BYTES_UTF8_CODE_POINT],
+    buf: [u8; BUFFER_SIZE],
+    chars: Vec<char>,
     buf_len: usize,
 }
 
@@ -63,13 +68,14 @@ impl<R: Read> Utf8Iter<R> {
         Utf8Iter {
             bytes_read: 0,
             reader,
-            buf: [0; MAX_BYTES_UTF8_CODE_POINT],
+            buf: [0; BUFFER_SIZE],
+            chars: Vec::with_capacity(BUFFER_SIZE),
             buf_len: 0,
         }
     }
 
-    /// Returns the next character in the stream, possibly made of several bytes
-    /// from the underlying reader.
+    /// Returns the next character in the stream, possibly made of several
+    /// bytes, from the underlying reader.
     ///
     /// NextUtf8::End indicates the underlying reader returned Ok(0), which
     /// means the end of the file descriptor was found -- for files, the end of
@@ -77,6 +83,11 @@ impl<R: Read> Utf8Iter<R> {
     /// could return data again in the future. Files can have data appended and
     /// sockets/pipes can receive data.
     pub fn next(&mut self) -> Result<char, Error> {
+        if let Some(c) = self.chars.pop() {
+            return Ok(c);
+        }
+
+        // Loop to call read() until a full UTF-8 character is read.
         loop {
             match self.reader.read(self.buf[self.buf_len..].as_mut()) {
                 Ok(0) => {
@@ -95,24 +106,40 @@ impl<R: Read> Utf8Iter<R> {
 
             match str::from_utf8(&self.buf[..self.buf_len]) {
                 Ok(s) => {
-                    let c = s.chars().next().unwrap();
-                    self.buf.copy_within(c.len_utf8().., 0);
-                    self.buf_len -= c.len_utf8();
-                    return Ok(c);
+                    for c in s.chars().rev() {
+                        self.chars.push(c);
+                    }
+
+                    let bytes_consumed = s.len();
+                    self.buf.copy_within(bytes_consumed.., 0);
+                    self.buf_len -= bytes_consumed;
+                    return Ok(self.chars.pop().unwrap());
                 }
                 Err(e) => {
                     if e.valid_up_to() > 0 {
-                        // The beginning of the buffer is a valid code point, copy it out.
+                        // The buffer begins with one or more valid code points,
+                        // move them out first.
                         let code_points = &self.buf[..e.valid_up_to()];
-                        let char = str::from_utf8(code_points).unwrap().chars().next().unwrap();
+                        let s = unsafe {
+                            // SAFETY: The bytes in code_points are valid UTF-8
+                            // because they were validated by the previous
+                            // str::from_utf8 call.
+                            str::from_utf8_unchecked(code_points)
+                        };
 
-                        // Shift the buffer left by the number of bytes in the first char.
-                        let removed_bytes = char.len_utf8();
-                        let remaining_buffer_range = removed_bytes..MAX_BYTES_UTF8_CODE_POINT;
-                        self.buf.copy_within(remaining_buffer_range, 0);
-                        self.buf_len = self.buf_len - removed_bytes;
+                        for c in s.chars().rev() {
+                            self.chars.push(c);
+                        }
 
-                        return Ok(char);
+                        let bytes_consumed = s.len();
+                        self.buf.copy_within(bytes_consumed.., 0);
+                        self.buf_len = self.buf_len - bytes_consumed;
+
+                        // The invalid bytes are kept in the buffer so we can
+                        // return them in an InvalidBytes error when next() is
+                        // called again.
+
+                        return Ok(self.chars.pop().unwrap());
                     }
 
                     match e.error_len() {
@@ -120,12 +147,13 @@ impl<R: Read> Utf8Iter<R> {
                             // The beginning of the buffer is invalid, remove it.
                             let invalid_bytes = Vec::from(&self.buf[..n]);
 
-                            self.buf.copy_within(n..MAX_BYTES_UTF8_CODE_POINT, 0);
+                            self.buf.copy_within(n.., 0);
                             self.buf_len = self.buf_len - n;
 
                             return Err(Error::InvalidBytes(invalid_bytes));
                         }
                         None => {
+                            // A partial code point was read, read more bytes.
                             continue;
                         }
                     }
