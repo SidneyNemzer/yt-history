@@ -20,8 +20,6 @@
 
 //! Asynchronous in-memory pipe
 //!
-//! TODO this is only used in tests, so it should be moved to the tests directory.
-//!
 //! Reading from the pipe will succeed with 0 bytes if the pipe is empty.
 //!
 //! The pipe is based on https://github.com/arcnmx/pipe-rs, but modified to use

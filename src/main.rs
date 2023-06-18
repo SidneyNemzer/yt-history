@@ -1,6 +1,5 @@
 mod model;
 mod parser;
-mod pipe;
 mod utf8_reader;
 
 use std::env;

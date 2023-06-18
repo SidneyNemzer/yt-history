@@ -177,8 +177,8 @@ impl<R: Read> Iterator for Utf8Iter<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipe;
     use std::io::Write;
+    use testlib::pipe;
 
     #[test]
     fn test_empty_reader() {
