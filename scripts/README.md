@@ -19,3 +19,7 @@ ythdev
 This is a shortcut to `cargo run --release` in the main binary project.
 
 To uninstall the dev command, delete the file `ythdev` in your binaries directory (again, that's `/usr/local/bin` by default).
+
+---
+
+Note: Running the scripts binary with any other command builds and runs the main binary.
