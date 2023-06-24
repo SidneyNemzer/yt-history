@@ -141,6 +141,20 @@ impl Models {
         counts
     }
 
+    pub fn count_watched_by_channel(&self) -> HashMap<String, (usize, Rc<Channel>)> {
+        let mut counts = HashMap::new();
+
+        for watched in self.watches.iter() {
+            let count = counts
+                .entry(watched.video.channel.id().clone())
+                .or_insert((0, watched.video.channel.clone()));
+
+            (*count).0 += 1;
+        }
+
+        counts
+    }
+
     pub fn insert_watched(
         &mut self,
         when: chrono::DateTime<FixedOffset>,

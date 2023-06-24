@@ -52,8 +52,8 @@ fn main() -> Result<()> {
     );
 
     let video_watches = models.count_watched_by_video();
-    let mut counts = video_watches.iter().collect::<Vec<_>>();
-    counts.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+    let mut video_watch_counts = video_watches.iter().collect::<Vec<_>>();
+    video_watch_counts.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
 
     const COUNT: usize = 50;
 
@@ -64,13 +64,38 @@ fn main() -> Result<()> {
         format!("{}", COUNT).bold(),
         "most watched videos".bold()
     );
-    for (i, (_, (count, video))) in counts.iter().enumerate().take(COUNT) {
+    for (i, (_, (count, video))) in video_watch_counts.iter().enumerate().take(COUNT) {
         let s = if *count != 1 { "s" } else { "" };
 
         println!(
             "  {index}. {title} {viewed} {count} {time}{s}",
             index = i + 1,
             title = video.title,
+            viewed = "viewed".dimmed(),
+            count = count,
+            time = "time".dimmed(),
+            s = s.dimmed(),
+        );
+    }
+
+    let channel_watches = models.count_watched_by_channel();
+    let mut channel_watch_counts = channel_watches.iter().collect::<Vec<_>>();
+    channel_watch_counts.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+
+    println!();
+    println!(
+        "{} {} {}",
+        "Top".bold(),
+        format!("{}", COUNT).bold(),
+        "most watched channels".bold()
+    );
+    for (i, (_, (count, channel))) in channel_watch_counts.iter().enumerate().take(COUNT) {
+        let s = if *count != 1 { "s" } else { "" };
+
+        println!(
+            "  {index}. {title} {viewed} {count} {time}{s}",
+            index = i + 1,
+            title = channel.name,
             viewed = "viewed".dimmed(),
             count = count,
             time = "time".dimmed(),
