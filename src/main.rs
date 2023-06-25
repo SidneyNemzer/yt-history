@@ -5,6 +5,7 @@ mod utf8_reader;
 use std::env;
 use std::fs::File;
 use std::io::prelude::*;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use colored::Colorize;
@@ -13,9 +14,8 @@ use crate::model::{Models, WhereVideo, WhereWatched};
 use crate::parser::ParseError;
 
 const COMMAND_NAME: &str = "yt-history";
-const USE_CACHE: bool = false;
+const USE_CACHE: bool = true;
 const DEFAULT_DATA_PATH: &str = "data/watch-history.html";
-const CACHE_PATH: &str = "data/cache.json";
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -106,17 +106,24 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn load_models(data_path: &str) -> Result<Models> {
+fn load_models(data_path_str: &str) -> Result<Models> {
     if !USE_CACHE {
         println!(
             "{}",
             "Not using cache because constant USE_CACHE is false".yellow()
         );
-        return parse(data_path);
+        return parse(data_path_str);
     }
 
+    let data_path = Path::new(data_path_str);
+    let data_filename = data_path.file_name().unwrap().to_str().unwrap();
+    let cache_path = Path::new(data_path_str)
+        .parent()
+        .unwrap()
+        .join(data_filename.to_owned() + ".cache.json");
+
     // Try loading cache
-    return load_cache().or_else(|e| {
+    return load_cache(&cache_path).or_else(|e| {
         // Fallback to parsing data from source file
         println!(
             "{} {}",
@@ -124,11 +131,15 @@ fn load_models(data_path: &str) -> Result<Models> {
             e.to_string().dimmed()
         );
 
-        let models = parse(data_path)?;
+        let models = parse(data_path_str)?;
 
-        let mut file = File::create(CACHE_PATH)?;
+        let mut file = File::create(&cache_path)?;
         write!(file, "{}", models.to_string())?;
-        println!("{} {}", "Wrote cache to".dimmed(), CACHE_PATH.white());
+        println!(
+            "{} {}",
+            "Wrote cache to".dimmed(),
+            cache_path.to_str().unwrap().white()
+        );
 
         Ok(models)
     });
@@ -138,9 +149,9 @@ fn print_usage() {
     println!("Usage: {} [file]", COMMAND_NAME);
 }
 
-fn load_cache() -> Result<Models> {
+fn load_cache(cache_path: &PathBuf) -> Result<Models> {
     let start = Instant::now();
-    let mut file = File::open(CACHE_PATH)?;
+    let mut file = File::open(cache_path)?;
     let mut contents = String::new();
     file.read_to_string(&mut contents)?;
     let models = Models::from_str(contents)?;
