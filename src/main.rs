@@ -103,6 +103,26 @@ fn main() -> Result<()> {
         );
     }
 
+    println!();
+    println!("{}", "Top channel views by year".bold());
+
+    let channel_watches_by_year = models.count_watched_by_channel_by_year();
+    let mut channel_watches_by_year = channel_watches_by_year.iter().collect::<Vec<_>>();
+    channel_watches_by_year.sort_by(|a, b| a.0.cmp(&b.0));
+
+    for (year, channel_watches) in channel_watches_by_year.iter_mut() {
+        let mut channel_watches = channel_watches.iter().collect::<Vec<_>>();
+        channel_watches.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+
+        print!("{}: ", year);
+
+        for (_, (count, channel)) in channel_watches.iter().take(10) {
+            print!("{} {} ", channel.name, format!("({})", count).dimmed());
+        }
+
+        println!();
+    }
+
     Ok(())
 }
 

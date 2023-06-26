@@ -1,4 +1,4 @@
-use chrono::{FixedOffset, Utc};
+use chrono::{Datelike, FixedOffset, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -146,6 +146,34 @@ impl Models {
 
         for watched in self.watches.iter() {
             let count = counts
+                .entry(watched.video.channel.id().clone())
+                .or_insert((0, watched.video.channel.clone()));
+
+            (*count).0 += 1;
+        }
+
+        counts
+    }
+
+    /// Returns a count of watches, per channel per year.
+    ///
+    /// HashMap<
+    ///   year,
+    ///   HashMap<
+    ///     channel id,
+    ///     (count, channel)
+    ///   >
+    /// >
+    pub fn count_watched_by_channel_by_year(
+        &self,
+    ) -> HashMap<i32, HashMap<String, (usize, Rc<Channel>)>> {
+        let mut counts: HashMap<i32, HashMap<String, (usize, Rc<Channel>)>> = HashMap::new();
+
+        for watched in self.watches.iter() {
+            let year = watched.when.year();
+
+            let channel_by_year = counts.entry(year).or_insert(HashMap::new());
+            let count = channel_by_year
                 .entry(watched.video.channel.id().clone())
                 .or_insert((0, watched.video.channel.clone()));
 
